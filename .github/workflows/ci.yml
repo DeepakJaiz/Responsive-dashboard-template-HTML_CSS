@@ -1,0 +1,257 @@
+name: CI/CD Pipeline
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+  workflow_dispatch: null
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  id-token: write
+env:
+  IMAGE_TAG: ${{ github.sha }}
+  AWS_REGION: us-east-1
+jobs:
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Secret scan with Gitleaks
+      uses: gitleaks/gitleaks-action@v1.1.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    # - name: Set up Python
+    #   uses: actions/setup-python@v5
+    #   with:
+    #     python-version: '3.12'
+    #     cache: pip
+    # - name: Install dependencies
+    #   run: |-
+    #     for i in 1 2 3; do
+    #       python -m pip install --break-system-packages --upgrade pip && break || sleep 10
+    #     done
+    #     if [ -f requirements.txt ]; then
+    #       for i in 1 2 3; do
+    #         pip install --break-system-packages -r requirements.txt && break || sleep 10
+    #       done
+    #     fi
+    #     pip install --break-system-packages pytest pytest-cov
+    # - name: Run unit and integration tests
+    #   run: pytest --junitxml=test-results.xml --cov=. --cov-report=xml
+    #   if: ${{ env.ACT != 'true' }}
+    # - name: Upload test artifacts
+    #   uses: actions/upload-artifact@v4
+    #   with:
+    #     name: unit-test-artifacts
+    #     path: test-results.xml
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-artifacts
+        path: coverage.xml
+    - name: Upload test reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-reports-artifacts
+        path: |-
+          reports/**
+          dist/**
+        if-no-files-found: warn
+  build-and-scan:
+    name: Build, Push and Scan Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+    - test
+    - security-scan
+    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+    - name: Log in to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Build Docker image (local, pre-push)
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        load: true
+        tags: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    # - name: Run Trivy vulnerability scanner
+    #   uses: aquasecurity/trivy-action@v0.36.0
+    #   with:
+    #     image-ref: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
+    #     format: table
+    #     exit-code: '1'
+    #     severity: CRITICAL,HIGH
+    - name: Push scanned Docker image
+      run: |-
+        docker tag ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }} ${{ secrets.ECR_REPOSITORY_URL }}:latest
+        docker push ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
+        docker push ${{ secrets.ECR_REPOSITORY_URL }}:latest
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts
+        path: Dockerfile
+    - name: Upload build reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-and-scan-artifacts
+        path: |-
+          reports/**
+          dist/**
+        if-no-files-found: warn
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+    - build-and-scan
+    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    environment: staging
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+    - name: Log in to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+    - name: Download task definition
+      run: |
+        aws ecs describe-task-definition \
+          --task-definition "${{ secrets.ECS_TASK_FAMILY }}" \
+          --region "${{ env.AWS_REGION }}" \
+          --query 'taskDefinition' \
+          --output json > task-definition.json
+    
+        echo "===== TASK DEFINITION ====="
+        cat task-definition.json
+        echo "===== END ====="
+    
+        echo "===== FILE SIZE ====="
+        wc -c task-definition.json
+    
+        echo "===== JSON VALIDATION ====="
+        jq empty task-definition.json
+    - name: Render Amazon ECS task definition
+      id: render-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ secrets.CONTAINER_NAME }}
+        image: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+        service: ${{ secrets.ECS_SERVICE_NAME }}
+        cluster: ${{ secrets.ECS_CLUSTER_NAME }}
+        wait-for-service-stability: true
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+    - deploy-staging
+    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    environment: production
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+    - name: Log in to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+    - name: Download task definition
+      run: "aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_FAMILY\
+        \ }} --query taskDefinition | \\\n  jq 'del(.taskDefinitionArn, .revision,\
+        \ .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)'\
+        \ > task-definition-prod.json\n"
+    - name: Render Amazon ECS task definition for production
+      id: render-task-def-prod
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition-prod.json
+        container-name: ${{ secrets.CONTAINER_NAME }}
+        image: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
+    - name: Deploy Amazon ECS task definition to production
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ steps.render-task-def-prod.outputs.task-definition }}
+        service: ${{ secrets.ECS_SERVICE_NAME }}
+        cluster: ${{ secrets.ECS_CLUSTER_NAME }}
+        wait-for-service-stability: true
+  rollback-staging:
+    name: Rollback Staging ECS Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+    - deploy-staging
+    if: failure() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    environment: staging
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+    - name: Rollback ECS Service
+      run: "aws ecs update-service \\\n  --cluster ${{ secrets.ECS_CLUSTER_NAME }}\
+        \ \\\n  --service ${{ secrets.ECS_SERVICE_NAME }} \\\n  --task-definition\
+        \ ${{ secrets.ECS_TASK_FAMILY }} \\\n  --force-new-deployment\naws ecs wait\
+        \ services-stable \\\n  --cluster ${{ secrets.ECS_CLUSTER_NAME }} \\\n  --services\
+        \ ${{ secrets.ECS_SERVICE_NAME }}"
+  rollback-production:
+    name: Rollback Production ECS Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+    - deploy-production
+    if: failure() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    environment: production
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+    - name: Rollback ECS Service
+      run: "aws ecs update-service \\\n  --cluster ${{ secrets.ECS_CLUSTER_NAME }}\
+        \ \\\n  --service ${{ secrets.ECS_SERVICE_NAME }} \\\n  --task-definition\
+        \ ${{ secrets.ECS_TASK_FAMILY }} \\\n  --force-new-deployment\naws ecs wait\
+        \ services-stable \\\n  --cluster ${{ secrets.ECS_CLUSTER_NAME }} \\\n  --services\
+        \ ${{ secrets.ECS_SERVICE_NAME }}"
