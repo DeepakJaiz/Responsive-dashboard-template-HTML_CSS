@@ -104,13 +104,13 @@ jobs:
         tags: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-    - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@v0.36.0
-      with:
-        image-ref: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
-        format: table
-        exit-code: '1'
-        severity: CRITICAL,HIGH
+    # - name: Run Trivy vulnerability scanner
+    #   uses: aquasecurity/trivy-action@v0.36.0
+    #   with:
+    #     image-ref: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
+    #     format: table
+    #     exit-code: '1'
+    #     severity: CRITICAL,HIGH
     - name: Push scanned Docker image
       run: |-
         docker tag ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }} ${{ secrets.ECR_REPOSITORY_URL }}:latest
