@@ -81,7 +81,7 @@ jobs:
     needs:
     - test
     - security-scan
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -135,7 +135,7 @@ jobs:
     timeout-minutes: 30
     needs:
     - build-and-scan
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment: staging
     steps:
     - name: Checkout code
@@ -172,7 +172,7 @@ jobs:
     timeout-minutes: 30
     needs:
     - deploy-staging
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment: production
     steps:
     - name: Checkout code
