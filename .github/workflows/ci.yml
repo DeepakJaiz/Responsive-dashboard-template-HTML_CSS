@@ -148,10 +148,22 @@ jobs:
     - name: Log in to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
     - name: Download task definition
-      run: "aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_FAMILY\
-        \ }} --query taskDefinition | \\\n  jq 'del(.taskDefinitionArn, .revision,\
-        \ .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)'\
-        \ > task-definition.json\n"
+      run: |
+        aws ecs describe-task-definition \
+          --task-definition "${{ secrets.ECS_TASK_FAMILY }}" \
+          --region "${{ env.AWS_REGION }}" \
+          --query 'taskDefinition' \
+          --output json > task-definition.json
+    
+        echo "===== TASK DEFINITION ====="
+        cat task-definition.json
+        echo "===== END ====="
+    
+        echo "===== FILE SIZE ====="
+        wc -c task-definition.json
+    
+        echo "===== JSON VALIDATION ====="
+        jq empty task-definition.json
     - name: Render Amazon ECS task definition
       id: render-task-def
       uses: aws-actions/amazon-ecs-render-task-definition@v1
