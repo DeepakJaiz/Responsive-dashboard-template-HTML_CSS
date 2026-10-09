@@ -1,90 +1,76 @@
-# CI/CD Pipeline Walkthrough
+# CI Pipeline Walkthrough
 
-This pipeline builds a static website Docker image, scans it, deploys it to an EC2 instance behind an ALB (staging → manual approval → production), verifies health, and rolls back automatically on failure.
+This pipeline builds, scans, and deploys a static website (nginx container) to AWS EC2 via SSM, with staging and gated production environments and automatic rollback.
+
+**Trigger:** push or PR to `main`, plus manual `workflow_dispatch`. Concurrent runs on the same ref cancel in-progress runs.
 
 ## Prerequisites
 
-- **Runtime:** Docker on the EC2 target instance; SSM Agent running; `jq` on the GitHub runner (preinstalled on ubuntu-latest).
-- **Base image:** `nginx:alpine` (serves static content from `/usr/share/nginx/html`).
-- **System packages (in image):** `curl` (used by health checks).
-- **Exposed ports:** Container listens on **80**; smoke tests map host **8080 → 80**; production runs on host port **80**.
+- **Runtime:** Docker (nginx:alpine-based image); GitHub Actions `ubuntu-latest` runners.
+- **Base image:** `nginx:alpine` (pulled from Docker Hub during build).
+- **System packages in image:** `curl` (used for health checks).
+- **Exposed ports:** container listens on **80**; mapped to host port **8080** (`HOST_PORT`).
+- **Entrypoint:** `nginx -g "daemon off;"`, serving from `/usr/share/nginx/html`.
+- **Registry:** GHCR (`ghcr.io`) — image published as `ghcr.io/<repo>:<sha>` and `:latest`.
+- **AWS:** region `us-east-1`; OIDC deploy role; EC2 instance managed via SSM (`AWS-RunShellScript`); ALB target group `app-tg-b8b234`.
 - **Required secrets:**
-  - `AWS_DEPLOY_ROLE_ARN` — IAM role assumed via OIDC for AWS API calls.
-  - `GHCR_USER` / `GHCR_TOKEN` — credentials for the EC2 instance to pull from GHCR.
-  - `GITHUB_TOKEN` — automatic; used for GHCR push (requires `packages: write`).
-- **AWS resources (hardcoded in env):**
-  - EC2 instance: `i-0a12c0b27ab3c6a08` (us-east-1)
-  - Target group: `app-tg-b8b234` behind an ALB
-- **Permissions:** `id-token: write` (OIDC), `packages: write` (GHCR), `security-events: write` (CodeQL).
-- **Build args:** None.
+  - `AWS_DEPLOY_ROLE_ARN` — IAM role assumed via OIDC for deploys
+  - `EC2_INSTANCE_ID` — target instance for SSM commands
+  - `DEPLOYMENT_NAME` — used in SSM command comments
+  - `GHCR_TOKEN` / `GHCR_USER` — GHCR pull credentials on the EC2 host
+  - `GITHUB_TOKEN` (automatic) — GHCR push, CodeQL SARIF upload
+- **Environment:** `production` GitHub environment (provides approval gate for the production deploy).
+- **Build args:** none.
 
-## Job-by-Job
+## Job-by-job
 
-### 1. Validate
-Runs on every PR/push to `main`. Verifies `index.html` exists. Type-checking is a no-op since this is a plain HTML/CSS site. Uploads any `reports/` or `dist/` artifacts.
+### 1. `security` — Secret scan + CodeQL
+- Checks out with `fetch-depth: 2` and greps **newly added files** for AWS access keys, private keys, and GitHub PATs.
+- Runs CodeQL for JavaScript and uploads results to the Security tab.
+- Runs on every push and PR. All later jobs depend on it passing.
 
-### 2. Security
-Runs in parallel with Validate. Two scans:
-- **Secret scan:** greps the working tree for patterns like `api_key=...`, `password=...` with 16+ char values. Fails the job on a hit.
-- **CodeQL:** analyzes JavaScript with results uploaded to the Security tab.
+### 2. `build` — Build, scan, publish (push/dispatch only)
+- Normalizes the repo name to lowercase (GHCR requires lowercase image paths).
+- Builds the image with two tags: `:<sha>` (immutable) and `:latest`.
+- **Smoke test:** runs the container locally, `curl --fail http://localhost:8080/`, then removes it.
+- **Trivy scan:** fails the job on CRITICAL or HIGH vulnerabilities.
+- Pushes both tags to GHCR; uploads `reports/**` and `dist/**` as artifacts.
 
-### 3. Build, scan and publish
-Only on push/`workflow_dispatch` (not PRs). Needs Validate + Security to pass.
-- Builds the image with Buildx (GHA cache enabled) and pushes to `ghcr.io/<owner>/static-website` tagged with both the commit SHA and `latest`.
-- **Trivy** scans the image; the job fails on CRITICAL or HIGH vulnerabilities.
-- **Smoke test:** runs the container locally on port 8080 and curls `/health`.
+### 3. `deploy-staging` — Deploy `:latest` to EC2
+- Assumes the AWS deploy role via OIDC (no long-lived AWS keys).
+- Sends an SSM command to the EC2 instance: docker login to GHCR, pull `:latest`, stop/remove the old `app` container, run the new one with `--restart unless-stopped` on port 8080→80.
+- Waits for the SSM command, then verifies:
+  - Container health: `curl --fail http://localhost:8080/` on the instance.
+  - ALB target health: every target in the target group must be `healthy`.
 
-### 4. Staging deploy
-Assumes the AWS deploy role via OIDC, then sends an SSM `RunShellScript` command to the EC2 instance. The remote script:
-1. Logs into GHCR (password via stdin).
-2. Pulls the SHA-tagged image.
-3. Runs a canary container on port 8080 and polls until healthy (up to 60s).
-4. Stops/removes the canary and the old `app` container.
-5. Starts the new container as `app` on port 80 with `--restart always`.
-6. Verifies with a local curl.
+### 4. `deploy-production` — Deploy `:<sha>` (approval required)
+- Runs in the `production` environment, so it **pauses for manual approval**.
+- Same SSM deploy flow, but pulls the **pinned commit SHA tag** for reproducibility.
+- Same health + ALB verification as staging.
 
-The workflow polls SSM command status (up to 150s) and fails with the remote stderr on error.
+### 5. `rollback` — Automatic recovery
+- Triggers only if production deploy fails.
+- Redeploys `:latest` (the tag staging just verified as healthy) via SSM, then prints diagnostics and fails the workflow so the failure is visible.
 
-### 5. Staging verify
-Resolves the ALB DNS name from the target group ARN, waits for the site to respond, then smoke tests `/`, `/plans.html`, `/projects.html`, `/courses.html`, and `/health` over HTTP.
-
-### 6. Production approval
-Manual gate — the repo owner must approve (minimum 1 approval) before production deploy.
-
-### 7. Production deploy
-Identical SSM deploy flow as staging, against the same EC2 instance (staging and production share the host; the "environment" distinction is the approval gate).
-
-### 8. Production verify
-Same ALB health + smoke test suite as staging, against production.
-
-### 9. Promote stable
-Pulls the SHA-tagged image and retags/pushes it as `:stable` — this becomes the rollback target.
-
-### 10. Post-deploy verification
-Confirms the ALB target group reports the instance as `healthy`.
-
-### 11. Rollback (on failure)
-If production deploy or verify fails, redeploys the `:stable` image via SSM (stop `app`, start fresh from `:stable`, verify locally).
-
-## How It Connects
+## How the stages connect
 
 ```
-validate ─┐
-          ├─→ build → staging-deploy → staging-verify
-security ─┘                                  │
-                                    production-approval
-                                             │
-                                  production-deploy → production-verify
-                                             │                    │
-                                  promote-stable ──┴── post-deploy
-                                             
-                    (on failure) rollback ← production-deploy/verify
+security ──► build ──► deploy-staging ──► [approval] ──► deploy-production
+                │              │                            │
+                │              │ (verifies :latest          │ (on failure)
+                │              │  as known-good)            ▼
+                └─ GHCR ◄──────┴──────────────────────── rollback (→ :latest)
 ```
 
-- **PRs** run only validate + security (fast feedback).
-- **Merges to main / manual runs** trigger the full build → staging → approval → production → promote chain.
-- **Concurrency:** one run per branch/ref; new runs cancel in-progress ones.
-- **All jobs** have a 30-minute timeout and upload `reports/**` / `dist/**` artifacts when present.
+- PRs only run `security` — builds/deploys happen on push to `main` or manual dispatch.
+- `build` publishes both tags; staging validates `:latest`, production deploys the exact `:<sha>`.
+- The rollback strategy relies on staging having verified `:latest` immediately before production.
+
+## Operational notes
+- **Downtime:** deploys are stop-then-run on a single container — expect a brief outage window.
+- **Secret scan scope:** only the last commit's added files are scanned.
+- **Debugging failed SSM steps:** the workflow prints command status, stdout, and stderr on failure.
+- **Artifacts:** each deploy job uploads `reports/**` and `dist/**` if present (warns if none found).
 
 ### Required GitHub Secrets
 
