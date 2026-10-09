@@ -324,7 +324,7 @@ jobs:
     name: Deploy to production
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # needs: production-approval
+    needs: staging-verify
     permissions:
       contents: read
       id-token: write
