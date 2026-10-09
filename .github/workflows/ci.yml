@@ -193,13 +193,13 @@ jobs:
                 ("docker pull " + ($img | @sh)),
                 "docker stop app-new 2>/dev/null || true",
                 "docker rm app-new 2>/dev/null || true",
-                ("docker run -d --name app-new -p 8080:80 " + ($img | @sh)),
+                ("docker run -d --name app-new --user 0:0 -p 8080:80 " + ($img | @sh)),
                 "ok=0; for i in $(seq 1 12); do if curl --fail -s http://localhost:8080/ >/dev/null; then ok=1; break; fi; sleep 5; done; if [ \"$ok\" != 1 ]; then docker logs app-new || true; exit 1; fi",
                 "docker stop app-new",
                 "docker rm app-new",
                 "docker stop app 2>/dev/null || true",
                 "docker rm app 2>/dev/null || true",
-                ("docker run -d --name app --restart always -p 80:80 " + ($img | @sh)),
+                ("docker run -d --name app --user 0:0 --restart always -p 80:80 " + ($img | @sh)),
                 "sleep 5",
                 "curl --fail -s http://localhost/ >/dev/null"
               ]
