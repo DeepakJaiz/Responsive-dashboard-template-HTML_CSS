@@ -104,6 +104,7 @@ jobs:
           cache-to: type=gha,mode=max
 
      
+     
       - name: Smoke test built image
         run: |
           set -e
@@ -111,12 +112,13 @@ jobs:
           docker rm -f ci-smoke >/dev/null 2>&1 || true
       
           docker run -d --name ci-smoke \
+            --user 0:0 \
             -p 8080:80 \
             "${{ env.IMAGE_NAME }}:${{ github.sha }}"
       
           for i in $(seq 1 12); do
             if [ "$(docker inspect -f '{{.State.Running}}' ci-smoke 2>/dev/null || echo false)" != "true" ]; then
-              echo "Container exited. Checking logs..."
+              echo "Container exited. Logs:"
               docker logs ci-smoke || true
               exit 1
             fi
@@ -131,9 +133,11 @@ jobs:
             sleep 5
           done
       
-          echo "Smoke test timed out. Container logs:"
+          echo "Smoke test timed out. Logs:"
           docker logs ci-smoke || true
           exit 1
+
+
 
 
 
