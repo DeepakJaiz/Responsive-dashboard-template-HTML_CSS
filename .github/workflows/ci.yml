@@ -1,12 +1,15 @@
+```yaml
 name: CI/CD
+
 on:
   push:
     branches:
-    - main
+      - main
   pull_request:
     branches:
-    - main
-  workflow_dispatch: null
+      - main
+  workflow_dispatch:
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ghcr.io/deepakjaiz/static-website
@@ -14,34 +17,38 @@ env:
   AWS_REGION: us-east-1
   EC2_INSTANCE_ID: i-0a12c0b27ab3c6a08
   TARGET_GROUP_ARN: arn:aws:elasticloadbalancing:us-east-1:targetgroup/app-tg-b8b234/0c8da5fc6617331e
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 permissions:
   contents: read
+
 jobs:
   validate:
     name: Validate (lint / type-check)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    - name: Validate HTML files exist
-      run: test -f index.html && echo 'HTML sources present'
-    - name: Type check (not applicable)
-      run: echo 'Static HTML/CSS site with no typed source code; type checking is
-        not applicable.'
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: validate-artifacts
-        path: 'reports/**
+      - name: Checkout
+        uses: actions/checkout@v4
 
-          dist/**
+      - name: Validate HTML files exist
+        run: test -f index.html && echo 'HTML sources present'
 
-          '
-        if-no-files-found: warn
+      - name: Type check (not applicable)
+        run: echo 'Static HTML/CSS site with no typed source code; type checking is not applicable.'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-artifacts
+          path: |
+            reports/**
+            dist/**
+          if-no-files-found: warn
+
   security:
     name: Security (secret scan / code scan)
     runs-on: ubuntu-latest
@@ -50,31 +57,20 @@ jobs:
       contents: read
       security-events: write
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    # - name: Scan for committed secrets
-    #   run: 'git diff --cached --name-only 2>/dev/null | xargs -r grep -RIlE ''(api[_-]?key|secret|password|token)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9+/=_-]{16,}''
-    #     --exclude-dir=.git . && echo ''Potential secrets found'' && exit 1 || echo
-    #     ''No secrets detected''
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    #     '
-    # - name: Initialize CodeQL
-    #   uses: github/codeql-action/init@v3
-    #   with:
-    #     languages: javascript
-    # - name: Perform CodeQL Analysis
-    #   uses: github/codeql-action/analyze@v3
-    #   with:
-    #     category: security
+      # Enable and configure secret scanning or CodeQL here when required.
+
   build:
     name: Build, scan and publish image
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs:
-    - validate
-    - security
+      - validate
+      - security
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
@@ -82,53 +78,51 @@ jobs:
     outputs:
       image: ghcr.io/deepakjaiz/static-website:${{ github.sha }}
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.repository_owner }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    - name: Build Docker image
-      uses: docker/build-push-action@v6
-      with:
-        context: .
-        file: Dockerfile
-        push: true
-        tags: |
-          ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          ${{ env.IMAGE_NAME }}:latest
-          
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-    # - name: Scan image for vulnerabilities
-    #   uses: aquasecurity/trivy-action@v0.36.0
-    #   with:
-    #     image-ref: ${{ env.REGISTRY }}/${{ github.repository_owner }}/static-website:${{
-    #       github.sha }}
-    #     format: table
-    #     exit-code: '1'
-    #     severity: CRITICAL,HIGH
-    - name: Smoke test built image
-      run: 'docker run -d --rm --name ci-smoke -p 8080:80 "${{ env.REGISTRY }}/${{
-        github.repository_owner }}/static-website:${{ github.sha }}" && sleep 5 &&
-        curl --fail http://localhost:8080/health && docker stop ci-smoke
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        '
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-artifacts
-        path: 'reports/**
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-          dist/**
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-          '
-        if-no-files-found: warn
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test built image
+        run: |
+          set -e
+          docker run -d --rm --name ci-smoke \
+            -p 8080:80 \
+            "${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          trap 'docker stop ci-smoke >/dev/null 2>&1 || true' EXIT
+          sleep 5
+          curl --fail http://localhost:8080/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            reports/**
+            dist/**
+          if-no-files-found: warn
     environment: production
+
   staging-deploy:
     name: Deploy to staging
     runs-on: ubuntu-latest
@@ -140,38 +134,80 @@ jobs:
       id-token: write
       packages: write
     steps:
-    - name: Configure AWS credentials (OIDC)
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Deploy to staging via SSM
-      run: "set -o pipefail\nCOMMANDS_JSON=$(jq -n \\\n  --arg img \"${{ env.REGISTRY\
-        \ }}/${{ github.repository_owner }}/static-website:${{ github.sha }}\" \\\n\
-        \  --arg user \"${{ secrets.GHCR_USER }}\" \\\n  --arg token \"${{ secrets.GHCR_TOKEN\
-        \ }}\" \\\n  '{commands: [\n    (\"echo \\\"\" + $token + \"\\\" | docker\
-        \ login ghcr.io -u \\\"\" + $user + \"\\\" --password-stdin\"),\n    (\"docker\
-        \ pull \" + $img),\n    (\"docker run -d --name app-new -p 8080:80 \" + $img),\n\
-        \    \"for i in $(seq 1 12); do curl --fail -s http://localhost:8080/ >/dev/null\
-        \ && ok=1 && break || ok=0; sleep 5; done; [ \\\"$ok\\\" = \\\"1\\\" ]\",\n\
-        \    \"docker stop app-new\",\n    \"docker rm app-new\",\n    \"docker stop\
-        \ app || true\",\n    \"docker rm app || true\",\n    (\"docker run -d --name\
-        \ app --restart always -p 80:80 \" + $img),\n    \"sleep 5\",\n    \"curl\
-        \ --fail -s http://localhost/ >/dev/null\"\n  ] | map(@sh) | join(\" && \"\
-        )}')\nCOMMAND_ID=$(aws ssm send-command \\\n  --instance-ids \"${{ env.EC2_INSTANCE_ID\
-        \ }}\" \\\n  --document-name \"AWS-RunShellScript\" \\\n  --comment 'Deploy\
-        \ app (staging)' \\\n  --parameters \"$COMMANDS_JSON\" \\\n  --region \"${{\
-        \ env.AWS_REGION }}\" \\\n  --query Command.CommandId --output text)\nfor\
-        \ i in $(seq 1 30); do\n  STATUS=$(aws ssm get-command-invocation --command-id\
-        \ \"$COMMAND_ID\" --instance-id \"${{ env.EC2_INSTANCE_ID }}\" --region \"\
-        ${{ env.AWS_REGION }}\" --query Status --output text)\n  if [ \"$STATUS\"\
-        \ = \"Success\" ]; then echo \"Deploy succeeded\"; exit 0; fi\n  if [ \"$STATUS\"\
-        \ = \"Failed\" ] || [ \"$STATUS\" = \"Cancelled\" ] || [ \"$STATUS\" = \"\
-        TimedOut\" ]; then\n    aws ssm get-command-invocation --command-id \"$COMMAND_ID\"\
-        \ --instance-id \"${{ env.EC2_INSTANCE_ID }}\" --region \"${{ env.AWS_REGION\
-        \ }}\" --query StandardErrorContent --output text\n    exit 1\n  fi\n  sleep\
-        \ 5\ndone\necho 'SSM command did not complete in time'; exit 1\n"
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to staging via SSM
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          COMMANDS_JSON=$(jq -n \
+            --arg img "$IMAGE" \
+            --arg user "$GHCR_USER" \
+            --arg token "$GHCR_TOKEN" \
+            '{
+              commands: [
+                ("echo " + ($token | @sh) + " | docker login ghcr.io -u " + ($user | @sh) + " --password-stdin"),
+                ("docker pull " + ($img | @sh)),
+                "docker stop app-new 2>/dev/null || true",
+                "docker rm app-new 2>/dev/null || true",
+                ("docker run -d --name app-new -p 8080:80 " + ($img | @sh)),
+                "ok=0; for i in $(seq 1 12); do if curl --fail -s http://localhost:8080/ >/dev/null; then ok=1; break; fi; sleep 5; done; test \"$ok\" = 1",
+                "docker stop app-new",
+                "docker rm app-new",
+                "docker stop app 2>/dev/null || true",
+                "docker rm app 2>/dev/null || true",
+                ("docker run -d --name app --restart always -p 80:80 " + ($img | @sh)),
+                "sleep 5",
+                "curl --fail -s http://localhost/ >/dev/null"
+              ]
+            }')
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ env.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy app (staging)" \
+            --parameters "$COMMANDS_JSON" \
+            --region "${{ env.AWS_REGION }}" \
+            --query Command.CommandId \
+            --output text)
+
+          for i in $(seq 1 30); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query Status \
+              --output text)
+
+            if [ "$STATUS" = "Success" ]; then
+              echo "Deploy succeeded"
+              exit 0
+            fi
+
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+                --region "${{ env.AWS_REGION }}" \
+                --query StandardErrorContent \
+                --output text
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "SSM command did not complete in time"
+          exit 1
     environment: production
+
   staging-verify:
     name: Staging health check and smoke test
     runs-on: ubuntu-latest
@@ -181,47 +217,59 @@ jobs:
       contents: read
       id-token: write
     steps:
-    - name: Configure AWS credentials (OIDC)
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Resolve ALB DNS name
-      id: alb
-      run: 'TG_ALB_ARN=$(aws elbv2 describe-target-groups --target-group-arns "${{
-        env.TARGET_GROUP_ARN }}" --region "${{ env.AWS_REGION }}" --query ''TargetGroups[0].LoadBalancerArns[0]''
-        --output text)
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-        DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns "$TG_ALB_ARN"
-        --region "${{ env.AWS_REGION }}" --query ''LoadBalancers[0].DNSName'' --output
-        text)
+      - name: Resolve ALB DNS name
+        id: alb
+        run: |
+          TG_ALB_ARN=$(aws elbv2 describe-target-groups \
+            --target-group-arns "${{ env.TARGET_GROUP_ARN }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'TargetGroups[0].LoadBalancerArns[0]' \
+            --output text)
 
-        echo "dns=$DNS" >> "$GITHUB_OUTPUT"
+          DNS=$(aws elbv2 describe-load-balancers \
+            --load-balancer-arns "$TG_ALB_ARN" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
 
-        '
-    - name: Wait for staging health
-      run: 'for i in $(seq 1 30); do curl --fail -s "http://${{ steps.alb.outputs.dns
-        }}/" && exit 0; sleep 5; done; echo ''Staging health check failed''; exit
-        1
+          echo "dns=$DNS" >> "$GITHUB_OUTPUT"
 
-        '
-    - name: Run staging smoke tests
-      run: 'for path in / /plans.html /projects.html /courses.html /health; do curl
-        --fail -s -o /dev/null "http://${{ steps.alb.outputs.dns }}${path}" || { echo
-        "Smoke test failed for ${path}"; exit 1; }; done; echo ''All staging smoke
-        tests passed''
+      - name: Wait for staging health
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail -s "http://${{ steps.alb.outputs.dns }}/"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Staging health check failed"
+          exit 1
 
-        '
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: staging-verify-artifacts
-        path: 'reports/**
+      - name: Run staging smoke tests
+        run: |
+          for path in / /plans.html /projects.html /courses.html; do
+            curl --fail -s -o /dev/null "http://${{ steps.alb.outputs.dns }}${path}" || {
+              echo "Smoke test failed for ${path}"
+              exit 1
+            }
+          done
+          echo "All staging smoke tests passed"
 
-          dist/**
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-verify-artifacts
+          path: |
+            reports/**
+            dist/**
+          if-no-files-found: warn
 
-          '
-        if-no-files-found: warn
   production-approval:
     name: Production approval
     runs-on: ubuntu-latest
@@ -229,11 +277,12 @@ jobs:
     needs: staging-verify
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
-    - name: Require manual approval
-      uses: trstringer/manual-approval@v1
-      with:
-        approvers: ${{ github.repository_owner }}
-        minimum-approvals: '1'
+      - name: Require manual approval
+        uses: trstringer/manual-approval@v1
+        with:
+          approvers: ${{ github.repository_owner }}
+          minimum-approvals: '1'
+
   production-deploy:
     name: Deploy to production
     runs-on: ubuntu-latest
@@ -244,38 +293,80 @@ jobs:
       id-token: write
       packages: write
     steps:
-    - name: Configure AWS credentials (OIDC)
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Deploy to production via SSM
-      run: "set -o pipefail\nCOMMANDS_JSON=$(jq -n \\\n  --arg img \"${{ env.REGISTRY\
-        \ }}/${{ github.repository_owner }}/static-website:${{ github.sha }}\" \\\n\
-        \  --arg user \"${{ secrets.GHCR_USER }}\" \\\n  --arg token \"${{ secrets.GHCR_TOKEN\
-        \ }}\" \\\n  '{commands: [\n    (\"echo \\\"\" + $token + \"\\\" | docker\
-        \ login ghcr.io -u \\\"\" + $user + \"\\\" --password-stdin\"),\n    (\"docker\
-        \ pull \" + $img),\n    (\"docker run -d --name app-new -p 8080:80 \" + $img),\n\
-        \    \"for i in $(seq 1 12); do curl --fail -s http://localhost:8080/ >/dev/null\
-        \ && ok=1 && break || ok=0; sleep 5; done; [ \\\"$ok\\\" = \\\"1\\\" ]\",\n\
-        \    \"docker stop app-new\",\n    \"docker rm app-new\",\n    \"docker stop\
-        \ app || true\",\n    \"docker rm app || true\",\n    (\"docker run -d --name\
-        \ app --restart always -p 80:80 \" + $img),\n    \"sleep 5\",\n    \"curl\
-        \ --fail -s http://localhost/ >/dev/null\"\n  ] | map(@sh) | join(\" && \"\
-        )}')\nCOMMAND_ID=$(aws ssm send-command \\\n  --instance-ids \"${{ env.EC2_INSTANCE_ID\
-        \ }}\" \\\n  --document-name \"AWS-RunShellScript\" \\\n  --comment 'Deploy\
-        \ app (production)' \\\n  --parameters \"$COMMANDS_JSON\" \\\n  --region \"${{\
-        \ env.AWS_REGION }}\" \\\n  --query Command.CommandId --output text)\nfor\
-        \ i in $(seq 1 30); do\n  STATUS=$(aws ssm get-command-invocation --command-id\
-        \ \"$COMMAND_ID\" --instance-id \"${{ env.EC2_INSTANCE_ID }}\" --region \"\
-        ${{ env.AWS_REGION }}\" --query Status --output text)\n  if [ \"$STATUS\"\
-        \ = \"Success\" ]; then echo \"Deploy succeeded\"; exit 0; fi\n  if [ \"$STATUS\"\
-        \ = \"Failed\" ] || [ \"$STATUS\" = \"Cancelled\" ] || [ \"$STATUS\" = \"\
-        TimedOut\" ]; then\n    aws ssm get-command-invocation --command-id \"$COMMAND_ID\"\
-        \ --instance-id \"${{ env.EC2_INSTANCE_ID }}\" --region \"${{ env.AWS_REGION\
-        \ }}\" --query StandardErrorContent --output text\n    exit 1\n  fi\n  sleep\
-        \ 5\ndone\necho 'SSM command did not complete in time'; exit 1\n"
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to production via SSM
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          COMMANDS_JSON=$(jq -n \
+            --arg img "$IMAGE" \
+            --arg user "$GHCR_USER" \
+            --arg token "$GHCR_TOKEN" \
+            '{
+              commands: [
+                ("echo " + ($token | @sh) + " | docker login ghcr.io -u " + ($user | @sh) + " --password-stdin"),
+                ("docker pull " + ($img | @sh)),
+                "docker stop app-new 2>/dev/null || true",
+                "docker rm app-new 2>/dev/null || true",
+                ("docker run -d --name app-new -p 8080:80 " + ($img | @sh)),
+                "ok=0; for i in $(seq 1 12); do if curl --fail -s http://localhost:8080/ >/dev/null; then ok=1; break; fi; sleep 5; done; test \"$ok\" = 1",
+                "docker stop app-new",
+                "docker rm app-new",
+                "docker stop app 2>/dev/null || true",
+                "docker rm app 2>/dev/null || true",
+                ("docker run -d --name app --restart always -p 80:80 " + ($img | @sh)),
+                "sleep 5",
+                "curl --fail -s http://localhost/ >/dev/null"
+              ]
+            }')
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ env.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy app (production)" \
+            --parameters "$COMMANDS_JSON" \
+            --region "${{ env.AWS_REGION }}" \
+            --query Command.CommandId \
+            --output text)
+
+          for i in $(seq 1 30); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query Status \
+              --output text)
+
+            if [ "$STATUS" = "Success" ]; then
+              echo "Deploy succeeded"
+              exit 0
+            fi
+
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+                --region "${{ env.AWS_REGION }}" \
+                --query StandardErrorContent \
+                --output text
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "SSM command did not complete in time"
+          exit 1
     environment: production
+
   production-verify:
     name: Production health check and smoke test
     runs-on: ubuntu-latest
@@ -285,47 +376,59 @@ jobs:
       contents: read
       id-token: write
     steps:
-    - name: Configure AWS credentials (OIDC)
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Resolve ALB DNS name
-      id: alb
-      run: 'TG_ALB_ARN=$(aws elbv2 describe-target-groups --target-group-arns "${{
-        env.TARGET_GROUP_ARN }}" --region "${{ env.AWS_REGION }}" --query ''TargetGroups[0].LoadBalancerArns[0]''
-        --output text)
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-        DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns "$TG_ALB_ARN"
-        --region "${{ env.AWS_REGION }}" --query ''LoadBalancers[0].DNSName'' --output
-        text)
+      - name: Resolve ALB DNS name
+        id: alb
+        run: |
+          TG_ALB_ARN=$(aws elbv2 describe-target-groups \
+            --target-group-arns "${{ env.TARGET_GROUP_ARN }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'TargetGroups[0].LoadBalancerArns[0]' \
+            --output text)
 
-        echo "dns=$DNS" >> "$GITHUB_OUTPUT"
+          DNS=$(aws elbv2 describe-load-balancers \
+            --load-balancer-arns "$TG_ALB_ARN" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
 
-        '
-    - name: Wait for production health
-      run: 'for i in $(seq 1 30); do curl --fail -s "http://${{ steps.alb.outputs.dns
-        }}/" && exit 0; sleep 5; done; echo ''Production health check failed''; exit
-        1
+          echo "dns=$DNS" >> "$GITHUB_OUTPUT"
 
-        '
-    - name: Run production smoke tests
-      run: 'for path in / /plans.html /projects.html /courses.html /health; do curl
-        --fail -s -o /dev/null "http://${{ steps.alb.outputs.dns }}${path}" || { echo
-        "Smoke test failed for ${path}"; exit 1; }; done; echo ''All production smoke
-        tests passed''
+      - name: Wait for production health
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail -s "http://${{ steps.alb.outputs.dns }}/"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Production health check failed"
+          exit 1
 
-        '
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: production-verify-artifacts
-        path: 'reports/**
+      - name: Run production smoke tests
+        run: |
+          for path in / /plans.html /projects.html /courses.html; do
+            curl --fail -s -o /dev/null "http://${{ steps.alb.outputs.dns }}${path}" || {
+              echo "Smoke test failed for ${path}"
+              exit 1
+            }
+          done
+          echo "All production smoke tests passed"
 
-          dist/**
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-verify-artifacts
+          path: |
+            reports/**
+            dist/**
+          if-no-files-found: warn
 
-          '
-        if-no-files-found: warn
   promote-stable:
     name: Promote verified image to stable tag
     runs-on: ubuntu-latest
@@ -336,23 +439,20 @@ jobs:
       contents: read
       packages: write
     steps:
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.repository_owner }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    - name: Retag verified image as stable
-      run: 'docker pull "${{ env.REGISTRY }}/${{ github.repository_owner }}/static-website:${{
-        github.sha }}"
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-        docker tag "${{ env.REGISTRY }}/${{ github.repository_owner }}/static-website:${{
-        github.sha }}" "${{ env.REGISTRY }}/${{ github.repository_owner }}/static-website:stable"
-
-        docker push "${{ env.REGISTRY }}/${{ github.repository_owner }}/static-website:stable"
-
-        '
+      - name: Retag verified image as stable
+        run: |
+          docker pull "${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          docker tag "${{ env.IMAGE_NAME }}:${{ github.sha }}" "${{ env.IMAGE_NAME }}:stable"
+          docker push "${{ env.IMAGE_NAME }}:stable"
     environment: production
+
   post-deploy:
     name: Post-deploy verification
     runs-on: ubuntu-latest
@@ -362,57 +462,101 @@ jobs:
       contents: read
       id-token: write
     steps:
-    - name: Configure AWS credentials (OIDC)
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Verify ALB target group health
-      run: 'aws elbv2 describe-target-health --target-group-arn "${{ env.TARGET_GROUP_ARN
-        }}" --region "${{ env.AWS_REGION }}" --query ''TargetHealthDescriptions[0].TargetHealth.State''
-        --output text | grep -q healthy && echo ''Target healthy behind ALB''
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-        '
+      - name: Verify ALB target group health
+        run: |
+          aws elbv2 describe-target-health \
+            --target-group-arn "${{ env.TARGET_GROUP_ARN }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+            --output text | grep -q healthy \
+            && echo 'Target healthy behind ALB'
+
     environment: production
+
   rollback:
     name: Rollback to last known good
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs:
-    - production-deploy
-    - production-verify
+      - production-deploy
+      - production-verify
     if: failure()
     permissions:
       contents: read
       id-token: write
       packages: write
     steps:
-    - name: Configure AWS credentials (OIDC)
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Roll back to stable image via SSM
-      run: "set -o pipefail\nCOMMANDS_JSON=$(jq -n \\\n  --arg img \"${{ env.REGISTRY\
-        \ }}/${{ github.repository_owner }}/static-website:stable\" \\\n  --arg user\
-        \ \"${{ secrets.GHCR_USER }}\" \\\n  --arg token \"${{ secrets.GHCR_TOKEN\
-        \ }}\" \\\n  '{commands: [\n    (\"echo \\\"\" + $token + \"\\\" | docker\
-        \ login ghcr.io -u \\\"\" + $user + \"\\\" --password-stdin\"),\n    (\"docker\
-        \ pull \" + $img),\n    \"docker stop app || true\",\n    \"docker rm app\
-        \ || true\",\n    (\"docker run -d --name app --restart always -p 80:80 \"\
-        \ + $img),\n    \"sleep 5\",\n    \"curl --fail -s http://localhost/ >/dev/null\"\
-        \n  ] | map(@sh) | join(\" && \")}')\nCOMMAND_ID=$(aws ssm send-command \\\
-        \n  --instance-ids \"${{ env.EC2_INSTANCE_ID }}\" \\\n  --document-name \"\
-        AWS-RunShellScript\" \\\n  --comment 'Rollback app' \\\n  --parameters \"\
-        $COMMANDS_JSON\" \\\n  --region \"${{ env.AWS_REGION }}\" \\\n  --query Command.CommandId\
-        \ --output text)\nfor i in $(seq 1 30); do\n  STATUS=$(aws ssm get-command-invocation\
-        \ --command-id \"$COMMAND_ID\" --instance-id \"${{ env.EC2_INSTANCE_ID }}\"\
-        \ --region \"${{ env.AWS_REGION }}\" --query Status --output text)\n  if [\
-        \ \"$STATUS\" = \"Success\" ]; then echo \"Rollback succeeded\"; exit 0; fi\n\
-        \  if [ \"$STATUS\" = \"Failed\" ] || [ \"$STATUS\" = \"Cancelled\" ] || [\
-        \ \"$STATUS\" = \"TimedOut\" ]; then\n    aws ssm get-command-invocation --command-id\
-        \ \"$COMMAND_ID\" --instance-id \"${{ env.EC2_INSTANCE_ID }}\" --region \"\
-        ${{ env.AWS_REGION }}\" --query StandardErrorContent --output text\n    exit\
-        \ 1\n  fi\n  sleep 5\ndone\necho 'Rollback SSM command did not complete in\
-        \ time'; exit 1"
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Roll back to stable image via SSM
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}:stable
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          COMMANDS_JSON=$(jq -n \
+            --arg img "$IMAGE" \
+            --arg user "$GHCR_USER" \
+            --arg token "$GHCR_TOKEN" \
+            '{
+              commands: [
+                ("echo " + ($token | @sh) + " | docker login ghcr.io -u " + ($user | @sh) + " --password-stdin"),
+                ("docker pull " + ($img | @sh)),
+                "docker stop app 2>/dev/null || true",
+                "docker rm app 2>/dev/null || true",
+                ("docker run -d --name app --restart always -p 80:80 " + ($img | @sh)),
+                "sleep 5",
+                "curl --fail -s http://localhost/ >/dev/null"
+              ]
+            }')
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ env.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Rollback app" \
+            --parameters "$COMMANDS_JSON" \
+            --region "${{ env.AWS_REGION }}" \
+            --query Command.CommandId \
+            --output text)
+
+          for i in $(seq 1 30); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+              --region "${{ env.AWS_REGION }}" \
+              --query Status \
+              --output text)
+
+            if [ "$STATUS" = "Success" ]; then
+              echo "Rollback succeeded"
+              exit 0
+            fi
+
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+                --region "${{ env.AWS_REGION }}" \
+                --query StandardErrorContent \
+                --output text
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "Rollback SSM command did not complete in time"
+          exit 1
     environment: production
+```
