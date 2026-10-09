@@ -221,7 +221,7 @@ jobs:
         docker run -d --name app-staging --restart unless-stopped -p \\($hp):\\($cp)\
         \ \\($img)\"]')\nCOMMAND_ID=$(aws ssm send-command \\\n  --instance-ids \"\
         $EC2_INSTANCE_ID\" \\\n  --document-name \"AWS-RunShellScript\" \\\n  --comment\
-        \ \"Deploy staging\" \\\n  --parameters \"$COMMANDS_JSON\" \\\n  --region\
+        \ \"Deploy staging\" \\\n  --parameters \"{\"commands\":$COMMANDS_JSON}\" \\\n  --region\
         \ \"${{ env.AWS_REGION }}\" \\\n  --query Command.CommandId --output text)\n\
         echo \"command_id=$COMMAND_ID\" >> \"$GITHUB_OUTPUT\"\n"
     - name: Wait for SSM command to succeed
