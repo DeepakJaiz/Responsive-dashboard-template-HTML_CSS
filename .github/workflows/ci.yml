@@ -106,12 +106,25 @@ jobs:
       - name: Smoke test built image
         run: |
           set -e
+      
           docker run -d --rm --name ci-smoke \
-            -p 8080:80 \
+            -p 80:80 \
             "${{ env.IMAGE_NAME }}:${{ github.sha }}"
+      
           trap 'docker stop ci-smoke >/dev/null 2>&1 || true' EXIT
-          sleep 5
-          curl --fail http://localhost:8080/
+      
+          for i in $(seq 1 12); do
+            if curl --fail -s http://localhost/; then
+              echo "Smoke test passed"
+              exit 0
+            fi
+            echo "Waiting for container..."
+            sleep 5
+          done
+    
+          echo "Smoke test failed"
+          docker logs ci-smoke
+          exit 1
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
