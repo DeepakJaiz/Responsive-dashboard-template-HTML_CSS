@@ -24,7 +24,6 @@ COPY index.html plans.html projects.html courses.html files.html settings.html p
 # Add health endpoint
 RUN echo "OK" > /usr/share/nginx/html/health
 
-USER appuser
 
 EXPOSE 80
 
