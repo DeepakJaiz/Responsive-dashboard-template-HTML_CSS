@@ -232,7 +232,7 @@ jobs:
         \  [ \"$STATUS\" = \"Failed\" ] || [ \"$STATUS\" = \"Cancelled\" ] || [ \"\
         $STATUS\" = \"TimedOut\" ] && { aws ssm get-command-invocation --command-id\
         \ \"${{ steps.deploy.outputs.command_id }}\" --instance-id \"$EC2_INSTANCE_ID\"\
-        \ --region \"${{ env.AWS_REGION }}\" --query StatusDetails --output text;\
+        \ --region \"${{ env.AWS_REGION }}\" --query '{StatusDetails:StatusDetails,StandardOutput:StandardOutputContent,StandardError:StandardErrorContent}' --output json;\
         \ exit 1; }\n  sleep 10\ndone\necho \"SSM command timed out\"; exit 1\n"
     - name: Staging health check (on instance)
       run: 'set -euo pipefail
