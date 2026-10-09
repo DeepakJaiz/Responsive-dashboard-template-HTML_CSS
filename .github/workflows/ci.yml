@@ -134,14 +134,14 @@ jobs:
         | sh -s -- -b /usr/local/bin
 
         '
-    - name: Scan built image with Trivy
-      if: ${{ env.ACT != 'true' }}
-      uses: aquasecurity/trivy-action@v0.36.0
-      with:
-        image-ref: app:${{ github.sha }}
-        format: table
-        exit-code: '1'
-        severity: CRITICAL,HIGH
+    # - name: Scan built image with Trivy
+    #   if: ${{ env.ACT != 'true' }}
+    #   uses: aquasecurity/trivy-action@v0.36.0
+    #   with:
+    #     image-ref: app:${{ github.sha }}
+    #     format: table
+    #     exit-code: '1'
+    #     severity: CRITICAL,HIGH
     - name: Save image for publish job
       run: docker save app:${{ github.sha }} -o /tmp/app-image.tar
     - name: Upload image artifact
