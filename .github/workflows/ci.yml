@@ -241,7 +241,7 @@ jobs:
         5 http://localhost:\($hp)/health"]'')
 
         COMMAND_ID=$(aws ssm send-command --instance-ids "$EC2_INSTANCE_ID" --document-name
-        "AWS-RunShellScript" --comment "Staging health check" --parameters "$COMMANDS_JSON"
+        "AWS-RunShellScript" --comment "Staging health check" --parameters "{\"commands\":$COMMANDS_JSON}"
         --region "${{ env.AWS_REGION }}" --query Command.CommandId --output text)
 
         sleep 15
@@ -262,7 +262,7 @@ jobs:
         5 http://localhost:\($hp)/"]'')
 
         COMMAND_ID=$(aws ssm send-command --instance-ids "$EC2_INSTANCE_ID" --document-name
-        "AWS-RunShellScript" --comment "Staging smoke test" --parameters "$COMMANDS_JSON"
+        "AWS-RunShellScript" --comment "Staging smoke test" --parameters "{\"commands\":$COMMANDS_JSON}"
         --region "${{ env.AWS_REGION }}" --query Command.CommandId --output text)
 
         sleep 15
@@ -365,7 +365,7 @@ jobs:
         5 http://localhost:\($hp)/health"]'')
 
         COMMAND_ID=$(aws ssm send-command --instance-ids "$EC2_INSTANCE_ID" --document-name
-        "AWS-RunShellScript" --comment "Production health check" --parameters "$COMMANDS_JSON"
+        "AWS-RunShellScript" --comment "Production health check" --parameters "{\"commands\":$COMMANDS_JSON}"
         --region "${{ env.AWS_REGION }}" --query Command.CommandId --output text)
 
         sleep 15
@@ -386,7 +386,7 @@ jobs:
         5 http://localhost:\($hp)/"]'')
 
         COMMAND_ID=$(aws ssm send-command --instance-ids "$EC2_INSTANCE_ID" --document-name
-        "AWS-RunShellScript" --comment "Production smoke test" --parameters "$COMMANDS_JSON"
+        "AWS-RunShellScript" --comment "Production smoke test" --parameters "{\"commands\":$COMMANDS_JSON}"
         --region "${{ env.AWS_REGION }}" --query Command.CommandId --output text)
 
         sleep 15
