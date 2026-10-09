@@ -16,7 +16,7 @@ env:
   IMAGE_TAG: ${{ github.sha }}
   AWS_REGION: us-east-1
   TARGET_GROUP_ARN: arn:aws:elasticloadbalancing:us-east-1:724540727964:targetgroup/app-tg-b8b234/0c8da5fc6617331e
-  HOST_PORT: '8080'
+  HOST_PORT: '80'
   HEALTHCHECK_PATH: /
 permissions:
   contents: read
