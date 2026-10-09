@@ -182,6 +182,7 @@ jobs:
             --arg token "$GHCR_TOKEN" \
             '{
               commands: [
+              "if ! command -v docker >/dev/null 2>&1; then if command -v dnf >/dev/null 2>&1; then dnf install -y docker; elif command -v amazon-linux-extras >/dev/null 2>&1; then amazon-linux-extras install docker -y; else echo 'Unsupported OS: cannot install Docker automatically'; exit 1; fi; fi", "systemctl enable --now docker", "docker --version", 
                 ("echo " + ($token | @sh) + " | docker login ghcr.io -u " + ($user | @sh) + " --password-stdin"),
                 ("docker pull " + ($img | @sh)),
                 "docker stop app-new 2>/dev/null || true",
