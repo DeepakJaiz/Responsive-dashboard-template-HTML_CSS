@@ -1,59 +1,94 @@
 # CI/CD Pipeline Walkthrough
 
-This pipeline runs on pushes and PRs to `main` (and manually via `workflow_dispatch`). PRs run only quality gates; full deploy runs on push/dispatch.
-
-## Pipeline stages
-
-1. **Validate** — Lint and type-check placeholders (add `ruff`/`eslint`, `mypy`/`tsc` configs to make these real). Runs on all PRs.
-2. **Test** — Unit/integration test placeholder; uploads `coverage/`, `test-results/`, `reports/`, `dist/` as artifacts regardless of outcome.
-3. **Security** — Installs Trivy and gitleaks. Scans: dependency vulnerabilities, IaC misconfigurations + secrets (Trivy), committed secrets (gitleaks). All fail the build on HIGH/CRITICAL findings.
-4. **Build** — After all three gates pass (push/dispatch only): builds `app:<sha>` with Docker Buildx, scans the built image with Trivy (CRITICAL/HIGH fails), saves the image as a 1-day artifact.
-5. **Publish** — Downloads the image artifact, authenticates to AWS via **OIDC** (`AWS_DEPLOY_ROLE_ARN`), resolves the account's ECR repo, and pushes `:<sha>` and `:latest`.
-6. **Staging deploy** — Uses SSM `SendCommand` on the staging EC2 instance to pull and run the container (`app`, port 8080, `--restart always`), waits for command success, then polls the ALB target group until healthy (up to 5 min).
-7. **Staging verify** — Resolves the ALB DNS and curls the health endpoint + smoke tests with retries.
-8. **Production approval** — GitHub `production` environment protection rule requires a manual approval.
-9. **Production deploy** — Captures the currently running image tag (saved as a rollback artifact, 7-day retention), then deploys via SSM exactly like staging, and verifies ALB target health.
-10. **Production verify** — Same health + smoke checks against the production ALB.
-11. **Rollback** — If production deploy or verify fails: redeploys the previously captured image tag via SSM.
-12. **Post-deploy** — Prints the production URL summary.
-
-Concurrent runs on the same ref cancel older runs (`concurrency` with `cancel-in-progress`). Most steps are gated with `ACT != 'true'` so the pipeline can run locally with [`act`](https://github.com/nektos/act).
+This pipeline builds a static website Docker image, scans it, deploys it to an EC2 instance behind an ALB (staging → manual approval → production), verifies health, and rolls back automatically on failure.
 
 ## Prerequisites
 
-Before CI can run successfully, the project must provide:
+- **Runtime:** Docker on the EC2 target instance; SSM Agent running; `jq` on the GitHub runner (preinstalled on ubuntu-latest).
+- **Base image:** `nginx:alpine` (serves static content from `/usr/share/nginx/html`).
+- **System packages (in image):** `curl` (used by health checks).
+- **Exposed ports:** Container listens on **80**; smoke tests map host **8080 → 80**; production runs on host port **80**.
+- **Required secrets:**
+  - `AWS_DEPLOY_ROLE_ARN` — IAM role assumed via OIDC for AWS API calls.
+  - `GHCR_USER` / `GHCR_TOKEN` — credentials for the EC2 instance to pull from GHCR.
+  - `GITHUB_TOKEN` — automatic; used for GHCR push (requires `packages: write`).
+- **AWS resources (hardcoded in env):**
+  - EC2 instance: `i-0a12c0b27ab3c6a08` (us-east-1)
+  - Target group: `app-tg-b8b234` behind an ALB
+- **Permissions:** `id-token: write` (OIDC), `packages: write` (GHCR), `security-events: write` (CodeQL).
+- **Build args:** None.
 
-### Tooling & runners
-- GitHub-hosted `ubuntu-latest` runners with Docker (build, save/load), `jq`, `curl`, `aws` CLI.
-- A `Dockerfile` at the repo root (present: base image `nginx:alpine`, installs `curl`, serves static content from `/usr/share/nginx/html`, exposes **port 80**).
-- ⚠️ **Port mismatch**: pipeline deploys with `-p 8080:8080` but the image listens on 80. Align `APP_PORT`/Dockerfile or the health checks will fail.
-- Language manifest + lint/test tooling for the placeholder Validate/Test jobs.
+## Job-by-Job
 
-### AWS infrastructure
-- ECR repository named `app` (auto-resolved by account ID).
-- EC2 instances (staging & production) registered in SSM and as ALB targets, with an instance profile allowing ECR pulls.
-- An ALB with target group.
-- OIDC trust relationship between GitHub and `AWS_DEPLOY_ROLE_ARN` with permissions for ECR, SSM, ELB, and STS.
+### 1. Validate
+Runs on every PR/push to `main`. Verifies `index.html` exists. Type-checking is a no-op since this is a plain HTML/CSS site. Uploads any `reports/` or `dist/` artifacts.
 
-### Required GitHub secrets
-| Secret | Purpose |
-|---|---|
-| `AWS_DEPLOY_ROLE_ARN` | OIDC role for AWS auth |
-| `AWS_REGION` | AWS region (default env: `us-east-1`) |
-| `EC2_INSTANCE_ID` | Target instance for SSM deploys |
-| `ALB_TARGET_GROUP_ARN` | Health verification |
-| `ALB_ARN` | Resolves deploy URL |
+### 2. Security
+Runs in parallel with Validate. Two scans:
+- **Secret scan:** greps the working tree for patterns like `api_key=...`, `password=...` with 16+ char values. Fails the job on a hit.
+- **CodeQL:** analyzes JavaScript with results uploaded to the Security tab.
 
-### Environment & variables
-- GitHub environments: `staging` and `production` (production requires an approval protection rule).
-- Env vars: `CONTAINER_NAME=app`, `APP_PORT=8080`, `IMAGE_TAG=<commit sha>`, `AWS_REGION=us-east-1`.
-- Exposed port (container): **80** per Dockerfile (see mismatch note above). No build args are used.
+### 3. Build, scan and publish
+Only on push/`workflow_dispatch` (not PRs). Needs Validate + Security to pass.
+- Builds the image with Buildx (GHA cache enabled) and pushes to `ghcr.io/<owner>/static-website` tagged with both the commit SHA and `latest`.
+- **Trivy** scans the image; the job fails on CRITICAL or HIGH vulnerabilities.
+- **Smoke test:** runs the container locally on port 8080 and curls `/health`.
+
+### 4. Staging deploy
+Assumes the AWS deploy role via OIDC, then sends an SSM `RunShellScript` command to the EC2 instance. The remote script:
+1. Logs into GHCR (password via stdin).
+2. Pulls the SHA-tagged image.
+3. Runs a canary container on port 8080 and polls until healthy (up to 60s).
+4. Stops/removes the canary and the old `app` container.
+5. Starts the new container as `app` on port 80 with `--restart always`.
+6. Verifies with a local curl.
+
+The workflow polls SSM command status (up to 150s) and fails with the remote stderr on error.
+
+### 5. Staging verify
+Resolves the ALB DNS name from the target group ARN, waits for the site to respond, then smoke tests `/`, `/plans.html`, `/projects.html`, `/courses.html`, and `/health` over HTTP.
+
+### 6. Production approval
+Manual gate — the repo owner must approve (minimum 1 approval) before production deploy.
+
+### 7. Production deploy
+Identical SSM deploy flow as staging, against the same EC2 instance (staging and production share the host; the "environment" distinction is the approval gate).
+
+### 8. Production verify
+Same ALB health + smoke test suite as staging, against production.
+
+### 9. Promote stable
+Pulls the SHA-tagged image and retags/pushes it as `:stable` — this becomes the rollback target.
+
+### 10. Post-deploy verification
+Confirms the ALB target group reports the instance as `healthy`.
+
+### 11. Rollback (on failure)
+If production deploy or verify fails, redeploys the `:stable` image via SSM (stop `app`, start fresh from `:stable`, verify locally).
+
+## How It Connects
+
+```
+validate ─┐
+          ├─→ build → staging-deploy → staging-verify
+security ─┘                                  │
+                                    production-approval
+                                             │
+                                  production-deploy → production-verify
+                                             │                    │
+                                  promote-stable ──┴── post-deploy
+                                             
+                    (on failure) rollback ← production-deploy/verify
+```
+
+- **PRs** run only validate + security (fast feedback).
+- **Merges to main / manual runs** trigger the full build → staging → approval → production → promote chain.
+- **Concurrency:** one run per branch/ref; new runs cancel in-progress ones.
+- **All jobs** have a 30-minute timeout and upload `reports/**` / `dist/**` artifacts when present.
 
 ### Required GitHub Secrets
 
 Auto-provisioned by this pipeline:
-- [x] `ALB_ARN`
-- [x] `ALB_TARGET_GROUP_ARN`
 - [x] `AWS_DEPLOY_ROLE_ARN`
 - [x] `AWS_REGION`
 - [x] `DEPLOYMENT_NAME`
