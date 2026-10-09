@@ -1,4 +1,4 @@
-```yaml
+
 name: CI/CD
 
 on:
@@ -559,4 +559,4 @@ jobs:
           echo "Rollback SSM command did not complete in time"
           exit 1
     environment: production
-```
+
