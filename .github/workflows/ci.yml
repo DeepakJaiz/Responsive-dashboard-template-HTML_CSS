@@ -103,28 +103,39 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+     
       - name: Smoke test built image
         run: |
           set -e
       
-          docker run -d --rm --name ci-smoke \
-            -p 80:80 \
+          docker rm -f ci-smoke >/dev/null 2>&1 || true
+      
+          docker run -d --name ci-smoke \
+            -p 8080:80 \
             "${{ env.IMAGE_NAME }}:${{ github.sha }}"
       
-          trap 'docker stop ci-smoke >/dev/null 2>&1 || true' EXIT
-      
           for i in $(seq 1 12); do
-            if curl --fail -s http://localhost/; then
+            if [ "$(docker inspect -f '{{.State.Running}}' ci-smoke 2>/dev/null || echo false)" != "true" ]; then
+              echo "Container exited. Checking logs..."
+              docker logs ci-smoke || true
+              exit 1
+            fi
+      
+            if curl --fail -s http://localhost:8080/ >/dev/null; then
               echo "Smoke test passed"
+              docker rm -f ci-smoke
               exit 0
             fi
+      
             echo "Waiting for container..."
             sleep 5
           done
-    
-          echo "Smoke test failed"
-          docker logs ci-smoke
+      
+          echo "Smoke test timed out. Container logs:"
+          docker logs ci-smoke || true
           exit 1
+
+
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
