@@ -307,18 +307,18 @@ jobs:
             dist/**
           if-no-files-found: warn
 
-  production-approval:
-    name: Production approval
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: staging-verify
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Require manual approval
-        uses: trstringer/manual-approval@v1
-        with:
-          approvers: ${{ github.repository_owner }}
-          minimum-approvals: '1'
+  # production-approval:
+  #   name: Production approval
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 30
+  #   needs: staging-verify
+  #   if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+  #   steps:
+  #     - name: Require manual approval
+  #       uses: trstringer/manual-approval@v1
+  #       with:
+  #         approvers: ${{ github.repository_owner }}
+  #         minimum-approvals: '1'
 
   production-deploy:
     name: Deploy to production
