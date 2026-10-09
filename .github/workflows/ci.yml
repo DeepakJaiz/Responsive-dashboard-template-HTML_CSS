@@ -86,12 +86,12 @@ jobs:
         '
     - name: Smoke test built image on runner
       if: ${{ env.ACT != 'true' }}
-      run: 'docker run -d --name smoke -p 8080:80 "${{ env.REGISTRY }}/${IMAGE_REPO}:${{
+      run: 'docker run -d --name smoke -p 80:80 "${{ env.REGISTRY }}/${IMAGE_REPO}:${{
         github.sha }}"
 
         sleep 5
 
-        curl --fail http://localhost:8080${{ env.HEALTHCHECK_PATH }}
+        curl --fail http://localhost:80${{ env.HEALTHCHECK_PATH }}
 
         docker rm -f smoke
 
