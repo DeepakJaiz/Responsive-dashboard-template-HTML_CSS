@@ -99,7 +99,7 @@ jobs:
         file: Dockerfile
         push: true
         tags: |
-          ${{ env.REGISTRY }}/${{ github.repository_owner }}/static-website:${{ github.sha }}
+          ghcr.io/deepakjaiz/static-website:${{ github.sha }}
           ${{ env.REGISTRY }}/${{ github.repository_owner }}/static-website:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
