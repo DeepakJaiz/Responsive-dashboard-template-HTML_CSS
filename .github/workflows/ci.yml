@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: CI
 on:
   push:
     branches:
@@ -6,252 +6,397 @@ on:
   pull_request:
     branches:
     - main
-  workflow_dispatch: null
+  workflow_dispatch:
+    inputs:
+      rollback_tag:
+        description: Image tag to roll back to
+        required: false
+        default: ''
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+env:
+  AWS_REGION: us-east-1
+  IMAGE_NAME: app
+  ALB_DNS_NAME: app-alb-e4178a-1213733514.us-east-1.elb.amazonaws.com
+  TARGET_GROUP_ARN: arn:aws:elasticloadbalancing:us-east-1:724540727964:targetgroup/app-tg-b8b234/0c8da5fc6617331e
+  HEALTHCHECK_PATH: /
 permissions:
   contents: read
-  id-token: write
-env:
-  IMAGE_TAG: ${{ github.sha }}
-  AWS_REGION: us-east-1
 jobs:
-  security-scan:
-    name: Security Scan
+  validate:
+    name: Validate (lint / type-check)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-    - name: Checkout code
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Lint / type-check
+      if: ${{ env.ACT != 'true' }}
+      run: 'echo "No lint tooling or type checker declared for this static HTML/CSS
+        project."
+
+        echo "Nothing to lint or type-check; validation passes trivially."
+
+        '
+  test:
+    name: Test (unit / integration / coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Run tests
+      if: ${{ env.ACT != 'true' }}
+      run: 'echo "No test framework or test files declared in the repository."
+
+        echo "Skipping unit/integration tests and coverage; nothing to test."
+
+        '
+    - name: Upload test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: 'test-results/**
+
+          coverage/**
+
+          '
+        if-no-files-found: ignore
+  security:
+    name: Security (dependency / secret / code scan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+    - name: Checkout
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Secret scan with Gitleaks
-      uses: gitleaks/gitleaks-action@v1.1.0
+    - name: Scan dependencies with Trivy
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type: fs
+        scan-ref: .
+        severity: HIGH,CRITICAL
+        exit-code: '1'
+    - name: Scan for committed secrets (gitleaks)
+      uses: gitleaks/gitleaks-action@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    # - name: Set up Python
-    #   uses: actions/setup-python@v5
-    #   with:
-    #     python-version: '3.12'
-    #     cache: pip
-    # - name: Install dependencies
-    #   run: |-
-    #     for i in 1 2 3; do
-    #       python -m pip install --break-system-packages --upgrade pip && break || sleep 10
-    #     done
-    #     if [ -f requirements.txt ]; then
-    #       for i in 1 2 3; do
-    #         pip install --break-system-packages -r requirements.txt && break || sleep 10
-    #       done
-    #     fi
-    #     pip install --break-system-packages pytest pytest-cov
-    # - name: Run unit and integration tests
-    #   run: pytest --junitxml=test-results.xml --cov=. --cov-report=xml
-    #   if: ${{ env.ACT != 'true' }}
-    # - name: Upload test artifacts
-    #   uses: actions/upload-artifact@v4
-    #   with:
-    #     name: unit-test-artifacts
-    #     path: test-results.xml
-    - name: Upload coverage artifacts
-      uses: actions/upload-artifact@v4
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
       with:
-        name: coverage-artifacts
-        path: coverage.xml
-    - name: Upload test reports
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-reports-artifacts
-        path: |-
-          reports/**
-          dist/**
-        if-no-files-found: warn
-  build-and-scan:
-    name: Build, Push and Scan Image
+        languages: javascript
+    - name: Perform CodeQL analysis
+      uses: github/codeql-action/analyze@v3
+  build:
+    name: Build and scan Docker image
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs:
+    - validate
     - test
-    - security-scan
-    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    - security
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Log in to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-    - name: Build Docker image (local, pre-push)
-      uses: docker/build-push-action@v5
+    - name: Build Docker image
+      run: docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+    - name: Scan Docker image with Trivy
+      uses: aquasecurity/trivy-action@0.28.0
       with:
-        context: .
-        push: false
-        load: true
-        tags: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-    # - name: Run Trivy vulnerability scanner
-    #   uses: aquasecurity/trivy-action@v0.36.0
-    #   with:
-    #     image-ref: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
-    #     format: table
-    #     exit-code: '1'
-    #     severity: CRITICAL,HIGH
-    - name: Push scanned Docker image
-      run: |-
-        docker tag ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }} ${{ secrets.ECR_REPOSITORY_URL }}:latest
-        docker push ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
-        docker push ${{ secrets.ECR_REPOSITORY_URL }}:latest
-    - name: Upload build artifacts
+        image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+        format: table
+        exit-code: '1'
+        severity: CRITICAL,HIGH
+    - name: Save image artifact
+      run: docker save ${{ env.IMAGE_NAME }}:${{ github.sha }} -o /tmp/app-image.tar
+    - name: Upload image artifact
       uses: actions/upload-artifact@v4
       with:
-        name: build-artifacts
-        path: Dockerfile
-    - name: Upload build reports
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-and-scan-artifacts
-        path: |-
-          reports/**
-          dist/**
-        if-no-files-found: warn
-  deploy-staging:
-    name: Deploy to Staging
+        name: app-image
+        path: /tmp/app-image.tar
+        retention-days: 1
+  publish:
+    name: Publish image to Amazon ECR
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs:
-    - build-and-scan
-    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    environment: staging
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
-    - name: Configure AWS credentials
+    - name: Download image artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: app-image
+        path: /tmp
+    - name: Load image
+      run: docker load -i /tmp/app-image.tar
+    - name: Configure AWS credentials (OIDC)
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Log in to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
-    - name: Download task definition
-      run: |
-        aws ecs describe-task-definition \
-          --task-definition "${{ secrets.ECS_TASK_FAMILY }}" \
-          --region "${{ env.AWS_REGION }}" \
-          --query 'taskDefinition' \
-          --output json > task-definition.json
-    
-        echo "===== TASK DEFINITION ====="
-        cat task-definition.json
-        echo "===== END ====="
-    
-        echo "===== FILE SIZE ====="
-        wc -c task-definition.json
-    
-        echo "===== JSON VALIDATION ====="
-        jq empty task-definition.json
-    - name: Render Amazon ECS task definition
-      id: render-task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: task-definition.json
-        container-name: ${{ secrets.CONTAINER_NAME }}
-        image: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
-    - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-      with:
-        task-definition: ${{ steps.render-task-def.outputs.task-definition }}
-        service: ${{ secrets.ECS_SERVICE_NAME }}
-        cluster: ${{ secrets.ECS_CLUSTER_NAME }}
-        wait-for-service-stability: true
-  deploy-production:
-    name: Deploy to Production
+        aws-region: ${{ secrets.AWS_REGION }}
+    - name: Resolve ECR registry
+      run: 'echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output
+        text).dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+
+        '
+    - name: Login to Amazon ECR
+      run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username
+        AWS --password-stdin "$ECR_REGISTRY"
+    - name: Tag and push image to ECR
+      run: 'docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} "$ECR_REGISTRY/${{
+        env.IMAGE_NAME }}:${{ github.sha }}"
+
+        docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} "$ECR_REGISTRY/${{ env.IMAGE_NAME
+        }}:latest"
+
+        docker push "$ECR_REGISTRY/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+
+        docker push "$ECR_REGISTRY/${{ env.IMAGE_NAME }}:latest"
+
+        '
+  staging-deploy:
+    name: Staging deploy (EC2 via SSM)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs:
-    - deploy-staging
-    # if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: publish
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      DEPLOYMENT_NAME: ${{ secrets.DEPLOYMENT_NAME }}
+    steps:
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
+    - name: Resolve ECR registry
+      run: 'echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output
+        text).dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+
+        '
+    - name: Deploy via SSM Run Command
+      id: deploy
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: "set -euo pipefail\nREMOTE_CMD=$(cat <<EOF\nset -euo pipefail\naws ecr\
+        \ get-login-password --region \"$AWS_REGION\" | docker login --username AWS\
+        \ --password-stdin \"$ECR_REGISTRY\"\ndocker pull \"$ECR_REGISTRY/${IMAGE_NAME}:${IMAGE_TAG}\"\
+        \ndocker run -d --name app-new --restart unless-stopped -p 8081:80 \"$ECR_REGISTRY/${IMAGE_NAME}:${IMAGE_TAG}\"\
+        \nfor i in $(seq 1 30); do\n  if curl -fsS http://localhost:8081/ >/dev/null\
+        \ 2>&1; then break; fi\n  sleep 2\n  if [ \"$i\" = \"30\" ]; then\n    docker\
+        \ logs app-new || true\n    exit 1\n  fi\ndone\ndocker stop app || true\n\
+        docker rm app || true\ndocker stop app-new\ndocker rm app-new\ndocker run\
+        \ -d --name app --restart unless-stopped -p 8080:80 \"$ECR_REGISTRY/${IMAGE_NAME}:${IMAGE_TAG}\"\
+        \nEOF\n)\nCOMMANDS_JSON=$(jq -n --arg cmd \"$REMOTE_CMD\" '{commands:[$cmd]}')\n\
+        CMD_ID=$(aws ssm send-command \\\n  --instance-ids \"$EC2_INSTANCE_ID\" \\\n\
+        \  --document-name AWS-RunShellScript \\\n  --comment \"Deploy ${DEPLOYMENT_NAME}\
+        \ ${IMAGE_NAME}:${IMAGE_TAG}\" \\\n  --parameters \"$COMMANDS_JSON\" \\\n\
+        \  --region \"$AWS_REGION\" \\\n  --query Command.CommandId --output text)\n\
+        echo \"command_id=$CMD_ID\" >> \"$GITHUB_OUTPUT\"\n"
+    - name: Wait for SSM command completion
+      run: "set -euo pipefail\naws ssm wait command-executed \\\n  --command-id \"\
+        ${{ steps.deploy.outputs.command_id }}\" \\\n  --instance-id \"$EC2_INSTANCE_ID\"\
+        \ \\\n  --region \"$AWS_REGION\" || {\n    echo \"SSM command failed; fetching\
+        \ invocation details:\"\n    aws ssm get-command-invocation \\\n      --command-id\
+        \ \"${{ steps.deploy.outputs.command_id }}\" \\\n      --instance-id \"$EC2_INSTANCE_ID\"\
+        \ \\\n      --region \"$AWS_REGION\" || true\n    exit 1\n  }\n"
+    - name: Verify ALB target group health
+      run: "set -euo pipefail\nUNHEALTHY=$(aws elbv2 describe-target-health \\\n \
+        \ --target-group-arn \"$TARGET_GROUP_ARN\" \\\n  --region \"$AWS_REGION\"\
+        \ \\\n  --query 'TargetHealthDescriptions[?TargetHealth.State!=`healthy`]'\
+        \ \\\n  --output text)\nif [ -n \"$UNHEALTHY\" ]; then\n  echo \"Unhealthy\
+        \ targets detected: $UNHEALTHY\"\n  exit 1\nfi\n"
+    - name: Probe health endpoint via ALB
+      run: curl --fail --retry 10 --retry-delay 10 --retry-connrefused "http://${ALB_DNS_NAME}${HEALTHCHECK_PATH}"
+    - name: Smoke test staging via ALB
+      run: 'curl --fail --retry 5 --retry-delay 5 "http://${ALB_DNS_NAME}/"
+
+        curl --fail "http://${ALB_DNS_NAME}/index.html"
+
+        '
+    environment: production
+  production-approval:
+    name: Production approval gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: staging-deploy
     environment: production
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
+    - name: Require manual approval
+      uses: actions/github-script@v7
       with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Log in to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
-    - name: Download task definition
-      run: "aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_FAMILY\
-        \ }} --query taskDefinition | \\\n  jq 'del(.taskDefinitionArn, .revision,\
-        \ .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)'\
-        \ > task-definition-prod.json\n"
-    - name: Render Amazon ECS task definition for production
-      id: render-task-def-prod
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: task-definition-prod.json
-        container-name: ${{ secrets.CONTAINER_NAME }}
-        image: ${{ secrets.ECR_REPOSITORY_URL }}:${{ env.IMAGE_TAG }}
-    - name: Deploy Amazon ECS task definition to production
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-      with:
-        task-definition: ${{ steps.render-task-def-prod.outputs.task-definition }}
-        service: ${{ secrets.ECS_SERVICE_NAME }}
-        cluster: ${{ secrets.ECS_CLUSTER_NAME }}
-        wait-for-service-stability: true
-  rollback-staging:
-    name: Rollback Staging ECS Service
+        script: 'core.notice(''Production deployment approved via the protected "production"
+          environment (required reviewers).'');
+
+          '
+  production-deploy:
+    name: Production deploy (EC2 via SSM)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs:
-    - deploy-staging
-    if: failure() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    environment: staging
-    steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Rollback ECS Service
-      run: "aws ecs update-service \\\n  --cluster ${{ secrets.ECS_CLUSTER_NAME }}\
-        \ \\\n  --service ${{ secrets.ECS_SERVICE_NAME }} \\\n  --task-definition\
-        \ ${{ secrets.ECS_TASK_FAMILY }} \\\n  --force-new-deployment\naws ecs wait\
-        \ services-stable \\\n  --cluster ${{ secrets.ECS_CLUSTER_NAME }} \\\n  --services\
-        \ ${{ secrets.ECS_SERVICE_NAME }}"
-  rollback-production:
-    name: Rollback Production ECS Service
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs:
-    - deploy-production
-    if: failure() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    timeout-minutes: 30
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: production-approval
     environment: production
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      DEPLOYMENT_NAME: ${{ secrets.DEPLOYMENT_NAME }}
     steps:
-    - name: Configure AWS credentials
+    - name: Configure AWS credentials (OIDC)
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    - name: Rollback ECS Service
-      run: "aws ecs update-service \\\n  --cluster ${{ secrets.ECS_CLUSTER_NAME }}\
-        \ \\\n  --service ${{ secrets.ECS_SERVICE_NAME }} \\\n  --task-definition\
-        \ ${{ secrets.ECS_TASK_FAMILY }} \\\n  --force-new-deployment\naws ecs wait\
-        \ services-stable \\\n  --cluster ${{ secrets.ECS_CLUSTER_NAME }} \\\n  --services\
-        \ ${{ secrets.ECS_SERVICE_NAME }}"
+        aws-region: ${{ secrets.AWS_REGION }}
+    - name: Resolve ECR registry
+      run: 'echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output
+        text).dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+
+        '
+    - name: Deploy via SSM Run Command
+      id: deploy
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: "set -euo pipefail\nREMOTE_CMD=$(cat <<EOF\nset -euo pipefail\naws ecr\
+        \ get-login-password --region \"$AWS_REGION\" | docker login --username AWS\
+        \ --password-stdin \"$ECR_REGISTRY\"\ndocker pull \"$ECR_REGISTRY/${IMAGE_NAME}:${IMAGE_TAG}\"\
+        \ndocker run -d --name app-new --restart unless-stopped -p 8081:80 \"$ECR_REGISTRY/${IMAGE_NAME}:${IMAGE_TAG}\"\
+        \nfor i in $(seq 1 30); do\n  if curl -fsS http://localhost:8081/ >/dev/null\
+        \ 2>&1; then break; fi\n  sleep 2\n  if [ \"$i\" = \"30\" ]; then\n    docker\
+        \ logs app-new || true\n    exit 1\n  fi\ndone\ndocker stop app || true\n\
+        docker rm app || true\ndocker stop app-new\ndocker rm app-new\ndocker run\
+        \ -d --name app --restart unless-stopped -p 8080:80 \"$ECR_REGISTRY/${IMAGE_NAME}:${IMAGE_TAG}\"\
+        \nEOF\n)\nCOMMANDS_JSON=$(jq -n --arg cmd \"$REMOTE_CMD\" '{commands:[$cmd]}')\n\
+        CMD_ID=$(aws ssm send-command \\\n  --instance-ids \"$EC2_INSTANCE_ID\" \\\n\
+        \  --document-name AWS-RunShellScript \\\n  --comment \"Deploy ${DEPLOYMENT_NAME}\
+        \ ${IMAGE_NAME}:${IMAGE_TAG}\" \\\n  --parameters \"$COMMANDS_JSON\" \\\n\
+        \  --region \"$AWS_REGION\" \\\n  --query Command.CommandId --output text)\n\
+        echo \"command_id=$CMD_ID\" >> \"$GITHUB_OUTPUT\"\n"
+    - name: Wait for SSM command completion
+      run: "set -euo pipefail\naws ssm wait command-executed \\\n  --command-id \"\
+        ${{ steps.deploy.outputs.command_id }}\" \\\n  --instance-id \"$EC2_INSTANCE_ID\"\
+        \ \\\n  --region \"$AWS_REGION\" || {\n    echo \"SSM command failed; fetching\
+        \ invocation details:\"\n    aws ssm get-command-invocation \\\n      --command-id\
+        \ \"${{ steps.deploy.outputs.command_id }}\" \\\n      --instance-id \"$EC2_INSTANCE_ID\"\
+        \ \\\n      --region \"$AWS_REGION\" || true\n    exit 1\n  }\n"
+    - name: Verify ALB target group health
+      run: "set -euo pipefail\nUNHEALTHY=$(aws elbv2 describe-target-health \\\n \
+        \ --target-group-arn \"$TARGET_GROUP_ARN\" \\\n  --region \"$AWS_REGION\"\
+        \ \\\n  --query 'TargetHealthDescriptions[?TargetHealth.State!=`healthy`]'\
+        \ \\\n  --output text)\nif [ -n \"$UNHEALTHY\" ]; then\n  echo \"Unhealthy\
+        \ targets detected: $UNHEALTHY\"\n  exit 1\nfi\n"
+    - name: Probe health endpoint via ALB
+      run: curl --fail --retry 10 --retry-delay 10 --retry-connrefused "http://${ALB_DNS_NAME}${HEALTHCHECK_PATH}"
+    - name: Smoke test production via ALB
+      run: 'curl --fail --retry 5 --retry-delay 5 "http://${ALB_DNS_NAME}/"
+
+        curl --fail "http://${ALB_DNS_NAME}/index.html"
+
+        '
+  rollback:
+    name: Rollback to previous image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'workflow_dispatch' && failure()
+    needs:
+    - production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      DEPLOYMENT_NAME: ${{ secrets.DEPLOYMENT_NAME }}
+    steps:
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
+    - name: Resolve ECR registry
+      run: 'echo "ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output
+        text).dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+
+        '
+    - name: Roll back to previous image via SSM
+      id: rollback
+      env:
+        ROLLBACK_TAG: ${{ inputs.rollback_tag || github.event.inputs.rollback_tag
+          }}
+      run: "set -euo pipefail\nif [ -z \"$ROLLBACK_TAG\" ]; then\n  echo \"ROLLBACK_TAG\
+        \ not provided; pass it via workflow_dispatch input.\"\n  exit 1\nfi\nREMOTE_CMD=$(cat\
+        \ <<EOF\nset -euo pipefail\naws ecr get-login-password --region \"$AWS_REGION\"\
+        \ | docker login --username AWS --password-stdin \"$ECR_REGISTRY\"\ndocker\
+        \ pull \"$ECR_REGISTRY/${IMAGE_NAME}:${ROLLBACK_TAG}\"\ndocker run -d --name\
+        \ app-new --restart unless-stopped -p 8081:80 \"$ECR_REGISTRY/${IMAGE_NAME}:${ROLLBACK_TAG}\"\
+        \nfor i in $(seq 1 30); do\n  if curl -fsS http://localhost:8081/ >/dev/null\
+        \ 2>&1; then break; fi\n  sleep 2\n  if [ \"$i\" = \"30\" ]; then\n    docker\
+        \ logs app-new || true\n    exit 1\n  fi\ndone\ndocker stop app || true\n\
+        docker rm app || true\ndocker stop app-new\ndocker rm app-new\ndocker run\
+        \ -d --name app --restart unless-stopped -p 8080:80 \"$ECR_REGISTRY/${IMAGE_NAME}:${ROLLBACK_TAG}\"\
+        \nEOF\n)\nCOMMANDS_JSON=$(jq -n --arg cmd \"$REMOTE_CMD\" '{commands:[$cmd]}')\n\
+        CMD_ID=$(aws ssm send-command \\\n  --instance-ids \"$EC2_INSTANCE_ID\" \\\n\
+        \  --document-name AWS-RunShellScript \\\n  --comment \"Rollback ${DEPLOYMENT_NAME}\
+        \ to previous image ${ROLLBACK_TAG}\" \\\n  --parameters \"$COMMANDS_JSON\"\
+        \ \\\n  --region \"$AWS_REGION\" \\\n  --query Command.CommandId --output\
+        \ text)\necho \"command_id=$CMD_ID\" >> \"$GITHUB_OUTPUT\"\n"
+    - name: Wait for SSM command completion
+      run: "set -euo pipefail\naws ssm wait command-executed \\\n  --command-id \"\
+        ${{ steps.rollback.outputs.command_id }}\" \\\n  --instance-id \"$EC2_INSTANCE_ID\"\
+        \ \\\n  --region \"$AWS_REGION\" || {\n    echo \"SSM rollback command failed;\
+        \ fetching invocation details:\"\n    aws ssm get-command-invocation \\\n\
+        \      --command-id \"${{ steps.rollback.outputs.command_id }}\" \\\n    \
+        \  --instance-id \"$EC2_INSTANCE_ID\" \\\n      --region \"$AWS_REGION\" ||\
+        \ true\n    exit 1\n  }\n"
+    - name: Verify ALB target group health
+      run: "set -euo pipefail\nUNHEALTHY=$(aws elbv2 describe-target-health \\\n \
+        \ --target-group-arn \"$TARGET_GROUP_ARN\" \\\n  --region \"$AWS_REGION\"\
+        \ \\\n  --query 'TargetHealthDescriptions[?TargetHealth.State!=`healthy`]'\
+        \ \\\n  --output text)\nif [ -n \"$UNHEALTHY\" ]; then\n  echo \"Unhealthy\
+        \ targets detected: $UNHEALTHY\"\n  exit 1\nfi\n"
+    - name: Probe health endpoint via ALB
+      run: curl --fail --retry 10 --retry-delay 10 --retry-connrefused "http://${ALB_DNS_NAME}${HEALTHCHECK_PATH}"
+    environment: production
+  post-deploy:
+    name: Post-deploy summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs:
+    - production-deploy
+    permissions:
+      contents: read
+      packages: write
+    env:
+      EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+    steps:
+    - name: Record deployment summary
+      run: 'echo "Deployed ${{ env.IMAGE_NAME }}:${{ github.sha }} to $EC2_INSTANCE_ID
+        (ALB: ${ALB_DNS_NAME}) at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
+
+        echo "Live endpoint: http://${ALB_DNS_NAME}" >> "$GITHUB_STEP_SUMMARY"'
+    environment: production

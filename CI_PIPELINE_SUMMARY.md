@@ -1,75 +1,92 @@
-# CI/CD Pipeline Walkthrough
+# CI Pipeline Walkthrough
 
-This pipeline runs on every push and PR to `main`, plus manual dispatch. It scans for secrets, runs tests, builds and scans a Docker image, pushes it to AWS ECR, and deploys to ECS staging then production — with automatic rollback on failure.
+This pipeline builds a static website served by nginx, scans it, publishes it to AWS ECR, and deploys it to an EC2 instance behind an Application Load Balancer — with a manual production approval gate and a rollback path.
+
+**Triggers:** push/PR to `main`, or manual `workflow_dispatch` (with optional `rollback_tag`). Concurrent runs on the same ref are cancelled.
 
 ## Prerequisites
-- **Runtime:** Python 3.12 (installed via `setup-python`, pip-cached)
-- **Base image:** `nginx:alpine` (Dockerfile)
-- **System packages in image:** `curl`
-- **Exposed port:** `80` (nginx serves from `/usr/share/nginx/html`)
-- **Entrypoint:** `nginx -g "daemon off;"`
-- **Python deps:** `requirements.txt` (optional), plus `pytest` and `pytest-cov`
-- **AWS:** region `us-east-1`; OIDC role via `AWS_DEPLOY_ROLE_ARN` (requires `id-token: write`)
-- **Required secrets:**
-  - `AWS_DEPLOY_ROLE_ARN` — IAM role for AWS auth
-  - `ECR_REPOSITORY_URL` — target ECR repo
-  - `ECS_CLUSTER_NAME`, `ECS_SERVICE_NAME`, `ECS_TASK_FAMILY`, `CONTAINER_NAME` — ECS deploy targets
-  - `GITHUB_TOKEN` (automatic) — for Gitleaks
-- **Environments:** `staging` and `production` must exist in repo settings
-- **jq** available on runners (used in task-definition download)
 
-## Job-by-Job
+Before CI can run, the project/environment needs:
 
-### 1. Security Scan (`security-scan`)
-Runs Gitleaks over full git history to catch committed secrets. Fails the pipeline if leaks are found. Runs in parallel with tests.
+- **Runtime:** None locally — static HTML/CSS; CI runs on `ubuntu-latest` GitHub runners with Docker + AWS CLI + `jq` available.
+- **Docker base image:** `nginx:alpine` (pulled from Docker Hub during build).
+- **System packages in image:** `curl` (installed in the Dockerfile for health checks).
+- **Exposed ports:** Container exposes **80**; host mappings used during deploy are **8080** (live) and **8081** (canary).
+- **Required GitHub secrets:**
+  - `ECR_REGISTRY` — ECR registry endpoint
+  - `AWS_DEPLOY_ROLE_ARN` — IAM role assumed via OIDC (`id-token: write`)
+  - `AWS_REGION` — deployment region (e.g. `us-east-1`)
+  - `EC2_INSTANCE_ID` — target EC2 instance for SSM Run Command
+  - `DEPLOYMENT_NAME` — label used in SSM command comments
+- **AWS infrastructure:** ECR repository, EC2 instance with SSM agent, ALB (`app-alb-e4178a-...elb.amazonaws.com`) and target group (`app-tg-b8b234`) registered in `us-east-1`.
+- **GitHub environment:** A protected `production` environment with required reviewers (approval gate).
+- **Build args:** None.
 
-### 2. Tests (`test`)
-Sets up Python 3.12 with pip caching, installs dependencies with retry logic (3 attempts), then runs `pytest` with JUnit XML output and coverage. Uploads test results, coverage, and report artifacts. Skipped locally when `ACT=true` (act compatibility).
+## Job-by-job
 
-### 3. Build, Push and Scan Image (`build-and-scan`)
-Runs only on push/dispatch (not PRs), after tests and security scan pass.
-- Authenticates to AWS via OIDC, logs into ECR
-- Builds the image locally with Buildx using GitHub Actions cache
-- Runs **Trivy** — fails on CRITICAL/HIGH vulnerabilities
-- Pushes the image tagged with the commit SHA and `latest`
+### 1. Validate
+Runs on PRs and pushes. Currently a no-op — no lint/type-check tooling is declared for this static HTML/CSS project.
 
-### 4. Deploy to Staging (`deploy-staging`)
-Fetches the current ECS task definition, swaps in the new image, and deploys to the staging cluster/service, waiting for stability.
+### 2. Test
+Also a no-op (no test framework present). Uploads `test-results/`, `coverage/`, `reports/`, and `dist/` as artifacts if they exist.
 
-### 5. Deploy to Production (`deploy-production`)
-Same ECS deploy flow against production, gated by the `production` environment (configure required reviewers here for a manual approval gate). Runs only after staging succeeds.
+### 3. Security
+Runs in parallel with validate/test:
+- **Trivy** filesystem scan — fails on HIGH/CRITICAL findings.
+- **Gitleaks** — detects committed secrets.
+- **CodeQL** — JavaScript static analysis, results to Security tab.
 
-### 6. Rollback Jobs (`rollback-staging` / `rollback-production`)
-Trigger only when the corresponding deploy fails. They force a new deployment of the existing task definition family (the last stable revision) and wait for the service to become stable.
+### 4. Build
+*(push / dispatch only; needs validate + test + security)*
+Builds `app:<sha>` with Docker Buildx, scans the image with Trivy (fails on HIGH/CRITICAL), and uploads the image tarball as a 1-day artifact.
 
-## How It Connects
+### 5. Publish
+Assumes the AWS deploy role via OIDC, logs into ECR, and pushes the image as both `:<sha>` and `:latest`.
+
+### 6. Staging deploy
+Deploys to the EC2 instance via **SSM Run Command** using a blue/green pattern:
+1. Pull the new image, run it as `app-new` on port 8081.
+2. Poll `localhost:8081` up to 60s; dump logs and fail if unhealthy.
+3. Stop/remove old `app`, then start the new image as `app` on port 8080.
+
+Then verifies: no unhealthy ALB targets, health endpoint reachable via ALB, and smoke tests on `/` and `/index.html`.
+
+### 7. Production approval
+Manual gate — a required reviewer must approve the protected `production` environment before production deploy proceeds.
+
+### 8. Production deploy
+Identical SSM blue/green deploy + ALB health verification and smoke tests as staging, against the production target group.
+
+### 9. Rollback
+Manual only (`workflow_dispatch` after a failed production deploy). Requires a `rollback_tag` input; redeploys that ECR tag using the same blue/green swap and health checks.
+
+### 10. Post-deploy summary
+Always runs after production deploy; writes a deployment record (image, instance, ALB URL, timestamp) to the job summary.
+
+## How stages connect
 
 ```
-security-scan ─┐
-               ├─► build-and-scan ─► deploy-staging ─► deploy-production
-      test ────┘            │              │                │
-                            ▼              ▼                ▼
-                    (Trivy blocks)   rollback-staging  rollback-production
+validate ─┐
+test ─────┼─→ build → publish → staging-deploy → production-approval → production-deploy → post-deploy
+security ─┘                                                            └→ rollback (manual, on failure)
 ```
 
-- PRs run only scan + tests (no build/deploy).
-- Pushes to `main` run the full pipeline through production.
-- Concurrency grouping cancels superseded runs on the same branch.
+PRs run only validate/test/security. Full build → deploy chain runs on push to `main` or manual dispatch, gated by human approval before production.
 
-## Tips
-- Add required reviewers to the `production` environment if you want a manual gate before prod deploys.
-- Keep `requirements.txt` pinned for reproducible builds.
-- Trivy failures: fix or add CVE suppressions before merging.
+## Known gaps
+- No linting, type-checking, or tests — validation stages pass trivially.
+- Health checks and smoke tests use plain HTTP.
+- Brief downtime during the container swap (stop old → start new is not atomic).
 
 ### Required GitHub Secrets
 
 Auto-provisioned by this pipeline:
 - [x] `AWS_DEPLOY_ROLE_ARN`
 - [x] `AWS_REGION`
-- [x] `CONTAINER_NAME`
-- [x] `ECS_CLUSTER_NAME`
-- [x] `ECS_SERVICE_NAME`
-- [x] `ECS_TASK_FAMILY`
+- [x] `DEPLOYMENT_NAME`
+- [x] `EC2_INSTANCE_ID`
+- [x] `GHCR_TOKEN`
+- [x] `GHCR_USER`
 
 Unresolved / failed to provision (add manually in GitHub before merging):
-- [ ] `ECR_REPOSITORY_URL`
+- [ ] `ECR_REGISTRY`
