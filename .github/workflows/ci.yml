@@ -176,19 +176,25 @@ jobs:
         run: |
           set -euo pipefail
 
+         
+          DOCKER_SETUP='if ! command -v docker >/dev/null 2>&1; then if command -v dnf >/dev/null 2>&1; then dnf install -y docker; elif command -v amazon-linux-extras >/dev/null 2>&1; then amazon-linux-extras install docker -y; elif command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y docker.io; else echo "Unsupported OS: cannot install Docker automatically"; exit 1; fi; fi'
+          
           COMMANDS_JSON=$(jq -n \
             --arg img "$IMAGE" \
             --arg user "$GHCR_USER" \
             --arg token "$GHCR_TOKEN" \
+            --arg setup "$DOCKER_SETUP" \
             '{
               commands: [
-              "if ! command -v docker >/dev/null 2>&1; then if command -v dnf >/dev/null 2>&1; then dnf install -y docker; elif command -v amazon-linux-extras >/dev/null 2>&1; then amazon-linux-extras install docker -y; else echo 'Unsupported OS: cannot install Docker automatically'; exit 1; fi; fi", "systemctl enable --now docker", "docker --version", 
+                $setup,
+                "systemctl enable --now docker",
+                "docker --version",
                 ("echo " + ($token | @sh) + " | docker login ghcr.io -u " + ($user | @sh) + " --password-stdin"),
                 ("docker pull " + ($img | @sh)),
                 "docker stop app-new 2>/dev/null || true",
                 "docker rm app-new 2>/dev/null || true",
                 ("docker run -d --name app-new -p 8080:80 " + ($img | @sh)),
-                "ok=0; for i in $(seq 1 12); do if curl --fail -s http://localhost:8080/ >/dev/null; then ok=1; break; fi; sleep 5; done; test \"$ok\" = 1",
+                "ok=0; for i in $(seq 1 12); do if curl --fail -s http://localhost:8080/ >/dev/null; then ok=1; break; fi; sleep 5; done; if [ \"$ok\" != 1 ]; then docker logs app-new || true; exit 1; fi",
                 "docker stop app-new",
                 "docker rm app-new",
                 "docker stop app 2>/dev/null || true",
@@ -198,6 +204,8 @@ jobs:
                 "curl --fail -s http://localhost/ >/dev/null"
               ]
             }')
+
+
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ env.EC2_INSTANCE_ID }}" \
