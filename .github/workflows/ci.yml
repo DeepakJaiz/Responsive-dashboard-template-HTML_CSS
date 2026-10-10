@@ -179,14 +179,12 @@ jobs:
             ("echo " + ($token | @sh) + " | docker login ghcr.io -u " + ($user | @sh) + " --password-stdin"),
             ("docker pull " + ($img | @sh)),
             "docker rm -f app-new 2>/dev/null || true",
-            ("docker run -d --name app-new --restart unless-stopped -p 127.0.0.1:" + $host_port + ":" + $container_port + " " + ($img | @sh)),
-            "sleep 3",
+            ("docker run -d --name app-new --restart unless-stopped " + ($img | @sh)),
+            "for i in $(seq 1 10); do if docker exec app-new sh -c " + (("command -v curl >/dev/null 2>&1 && curl -fsS http://localhost:" + $container_port + $healthcheck_path + " || command -v wget >/dev/null 2>&1 && wget -q -O /dev/null http://localhost:" + $container_port + $healthcheck_path) | @sh) + "; then break; fi; sleep 3; done",
             ("docker exec app-new sh -c " + (("command -v curl >/dev/null 2>&1 && curl -fsS http://localhost:" + $container_port + $healthcheck_path + " || command -v wget >/dev/null 2>&1 && wget -q -O /dev/null http://localhost:" + $container_port + $healthcheck_path) | @sh)),
-            "docker stop app 2>/dev/null || true",
-            "docker rm app 2>/dev/null || true",
-            "docker stop app-new 2>/dev/null || true",
-            "docker rm app-new 2>/dev/null || true",
-            ("docker run -d --name app-new --restart unless-stopped " + ($img | @sh))
+            "docker rm -f app-new",
+            "docker rm -f app 2>/dev/null || true",
+            ("docker run -d --name app --restart unless-stopped -p " + $host_port + ":" + $container_port + " " + ($img | @sh))
           ]')
 
         COMMANDS_JSON=$(jq -n --argjson c "$COMMANDS_JSON" '{"commands": $c}')
