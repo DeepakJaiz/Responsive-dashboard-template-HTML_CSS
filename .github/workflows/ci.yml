@@ -164,7 +164,7 @@ jobs:
         \ + \"/ || exit 1\"),\n    \"docker stop app || true\",\n    \"docker rm app\
         \ || true\",\n    \"docker rm app-new || true\",\n    (\"docker run -d --name\
         \ app --restart unless-stopped -p \" + $host_port + \":\" + $container_port\
-        \ + \" \" + $img)\n  ] | map(@sh) | join(\" \")')\nCOMMANDS_JSON=$(jq -n --arg\
+        \ + \" \" + $img)\n  ]')\nCOMMANDS_JSON=$(jq -n --arg\
         \ c \"$COMMANDS_JSON\" '{\"commands\": [$c]}')\naws ssm send-command \\\n\
         \  --instance-ids \"${{ env.EC2_INSTANCE_ID }}\" \\\n  --region \"${{ env.AWS_REGION\
         \ }}\" \\\n  --document-name \"AWS-RunShellScript\" \\\n  --comment \"Deploy\
@@ -251,7 +251,7 @@ jobs:
         \ + \"/ || exit 1\"),\n    \"docker stop app || true\",\n    \"docker rm app\
         \ || true\",\n    \"docker rm app-new || true\",\n    (\"docker run -d --name\
         \ app --restart unless-stopped -p \" + $host_port + \":\" + $container_port\
-        \ + \" \" + $img)\n  ] | map(@sh) | join(\" \")')\nCOMMANDS_JSON=$(jq -n --arg\
+        \ + \" \" + $img)\n  ]')\nCOMMANDS_JSON=$(jq -n --arg\
         \ c \"$COMMANDS_JSON\" '{\"commands\": [$c]}')\naws ssm send-command \\\n\
         \  --instance-ids \"${{ env.EC2_INSTANCE_ID }}\" \\\n  --region \"${{ env.AWS_REGION\
         \ }}\" \\\n  --document-name \"AWS-RunShellScript\" \\\n  --comment \"Deploy\
