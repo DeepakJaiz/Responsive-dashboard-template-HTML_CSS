@@ -179,8 +179,8 @@ jobs:
       run: "set -e\nIMAGE=\"${{ env.REGISTRY }}/${IMAGE_REPO}:${{ env.IMAGE_TAG }}\"\
         \nSCRIPT=$(cat <<EOF\nset -e\necho \"${GHCR_TOKEN}\" | docker login ghcr.io\
         \ -u \"${GHCR_USER}\" --password-stdin\ndocker pull ${IMAGE}\ndocker run -d\
-        \ --name app-staging-new --restart unless-stopped -p 80:80 ${IMAGE}\nSTAGING_OK=0\n\
-        for i in \\$(seq 1 12); do\n  if curl -fsS http://localhost:8080/ >/dev/null\
+        \ --name app-staging-new --restart unless-stopped ${IMAGE}\nSTAGING_OK=0\n\
+        for i in \\$(seq 1 12); do\n  if docker exec app-staging-new curl -fsS http://localhost:80/ >/dev/null\
         \ 2>&1; then STAGING_OK=1; break; fi\n  sleep 5\ndone\nif [     \"if ! command\
         \ -v docker >/dev/null 2>&1; then if command -v dnf >/dev/null 2>&1; then\
         \ dnf install -y docker; elif command -v yum >/dev/null 2>&1; then yum install\
