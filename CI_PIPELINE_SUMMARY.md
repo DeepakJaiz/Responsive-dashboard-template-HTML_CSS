@@ -1,60 +1,60 @@
-# CI/CD Pipeline Walkthrough
+# CI Pipeline Walkthrough
 
-This pipeline takes the `app-slzj` app from code to a running container on an AWS EC2 instance, with security gates, a manual production approval, and automatic rollback.
+This pipeline builds, scans, and deploys a static nginx site to a single EC2 instance via AWS SSM, with staging, gated production, and automatic rollback.
 
 ## Prerequisites
 
-Before CI can run, the project and environment must provide:
+**Runtime & tooling**
+- GitHub Actions `ubuntu-latest` runners
+- Docker + Buildx (runner-provided)
+- Trivy (installed in-pipeline via apt) and Gitleaks v8.18.4 (downloaded in-pipeline)
+- `jq`, `curl`, AWS CLI (runner-provided)
 
-- **Runtime / base image:** Docker image based on `nginx:alpine`; app served by nginx (`CMD ["nginx", "-g", "daemon off;"]`), static content in `/usr/share/nginx/html`.
-- **System packages in image:** `curl` (used by in-container health checks).
-- **Exposed ports:** Container listens on **port 80**; mapped to host port **80** on the EC2 instance.
-- **CI runners:** `ubuntu-latest` GitHub-hosted runners with Docker (Buildx, gitleaks/Trivy via Docker).
-- **Required GitHub secrets:**
-  - `GITHUB_TOKEN` (implicit) — GHCR push/pull
-  - `AWS_DEPLOY_ROLE_ARN` — IAM role assumed via OIDC for SSM deployment
-  - `GHCR_USER` / `GHCR_TOKEN` — GHCR credentials used **on the EC2 instance** to pull the image
-- **AWS setup:**
-  - EC2 instance `i-0b8123fec53c25bc6` in `us-east-1` with SSM agent running
-  - OIDC trust relationship allowing GitHub Actions to assume `AWS_DEPLOY_ROLE_ARN`
-  - Docker installed on the instance (auto-installed by deploy script if missing)
-- **GitHub environment:** `production` environment with required reviewer protection rules.
-- **Networking:** Public access to `http://54.198.44.198:80` for health checks.
-- **Build args:** None required.
+**Docker image**
+- Base image: `nginx:alpine`
+- Exposed port: **80** (mapped to host port 80)
+- System packages in image: `curl`
+- Entrypoint: `nginx -g 'daemon off;'`, serving from `/usr/share/nginx/html`
 
-## Pipeline Flow
+**Exposed ports**
+- Host `80` → container `80` (`HOST_PORT`/`CONTAINER_PORT` env vars)
 
-```
-security → build → deploy-staging → production-approval → deploy-production → post-deploy
-                                                          ↘ (on failure) rollback
-```
+**Required secrets**
+- `GITHUB_TOKEN` (automatic; used for GHCR login, `packages: write`)
+- `AWS_DEPLOY_ROLE_ARN` — IAM role assumed via OIDC (`id-token: write`)
+- `GHCR_USER`, `GHCR_TOKEN` — GHCR pull credentials on the EC2 instance
+- `EC2_INSTANCE_ID` — target instance for SSM commands
+- `DEPLOYMENT_NAME` — used in SSM command comments
 
-### 1. Security (secrets & code)
-Runs on every push and PR to `main`. Uses **Gitleaks** to detect committed secrets and **CodeQL** for JavaScript static analysis. Uploads any `reports/**` / `dist/**` as artifacts. All later jobs depend on this passing.
+**Environment / config**
+- `REGISTRY=ghcr.io`, `IMAGE_TAG=latest`, `AWS_REGION=us-east-1`
+- `PUBLIC_ENDPOINT=http://54.198.44.198:80` (hardcoded public IP)
+- GitHub `production` environment must exist with required reviewers
+- EC2 instance must have SSM agent, Docker (auto-installed if missing), and network access to GHCR
 
-### 2. Build, scan & publish image
-Push/dispatch only. Builds the Docker image with **Buildx** using GHA layer caching, scans it with **Trivy** (fails on CRITICAL/HIGH findings), runs a local smoke test (`curl` on port 8080→80), then pushes to **GHCR** tagged `latest`. Also uploads the Dockerfile as metadata.
+## Pipeline stages
 
-### 3. Deploy (staging)
-Assumes the AWS deploy role via **OIDC**, then sends a shell script to the EC2 instance via **SSM Run Command**. The script: installs Docker if needed, logs into GHCR, pulls the image, starts a `app-new` container, health-checks it inside the instance, then swaps it in as `app` on port 80. The runner polls SSM status (up to ~5 min) and then verifies the public URL returns 200.
+1. **validate** — Lint and type-check. Currently no-ops (no linter/type checker in repo).
+2. **test** — Unit/integration tests and coverage. Currently no-ops. Uploads `reports/**` and `dist/**` as `ci-artifacts`.
+3. **security** — Installs Trivy + Gitleaks, then runs three gates that fail on HIGH/CRITICAL: filesystem dependency scan, secret scan, and repo code scan.
+4. **build** (needs validate/test/security; push & manual-dispatch only) — Builds the image, tags it `latest` and with the commit SHA, scans it with Trivy (fails on HIGH/CRITICAL), preserves the old `latest` as `previous` (rollback target), and pushes to GHCR.
+5. **staging-deploy** — Assumes the AWS deploy role via OIDC, then sends a shell script to the EC2 instance over SSM: pulls the image, runs a candidate container (`app-staging-new`), health-checks it, then swaps it in as `app-staging`. Waits up to 5 minutes for the SSM command result.
+6. **staging-health-check** — Curls `/health` (with retries), `/`, and `/plans.html` against the public endpoint.
+7. **production-deploy** — Same SSM blue-green pattern against the `production` environment, which **requires manual approval**. Runs `app-new`, health-checks, then replaces `app`.
+8. **production-health-check** — Same smoke tests against production.
+9. **rollback** (runs only if production deploy/health-check fails) — Redeploys the `previous` image tag via SSM.
+10. **post-deploy cleanup** — Prunes dangling images on the instance after a successful production deploy.
 
-### 4. Production approval gate
-A GitHub **environment protection rule** on `production` pauses the pipeline until a required reviewer approves. Nothing executes here except the wait.
+## How stages connect
 
-### 5. Deploy (production)
-First tags the currently deployed image as `previous` in GHCR (rollback point), then repeats the same SSM-based deploy and health/smoke checks. Emits a deployment status notification.
+PRs run only validate → test → security (fast feedback). Pushes to `main` (or manual dispatch) continue through build → staging → approval gate → production. Artifacts are uploaded at test, build, and both health-check stages. Concurrency grouping cancels in-progress runs for the same ref, so only the latest commit deploys.
 
-### 6. Rollback (on failure)
-Triggered only if `deploy-production` fails. Redeploys the `previous` image tag to the instance via SSM and notifies of the rollback result.
+## Known issues to fix
 
-### 7. Post-deploy verification
-Final `curl` against `http://54.198.44.198/` to confirm the deployment is live.
-
-## Key Operational Notes
-- **Concurrency:** Runs are grouped per ref; new pushes cancel in-progress runs.
-- **Local testing:** Steps guarded by `env.ACT != 'true'` are skipped when running with `act` locally.
-- **Downtime:** The swap is stop-old-then-start-new on a single instance — expect a brief outage during deploys.
-- **Rollback limits:** Rollback covers production deploy failures only; failures in post-deploy verification do not trigger it.
+- The health-check `if` condition in staging/production deploy scripts contains a docker-install command string instead of comparing `$STAGING_OK`/`$NEW_OK` — the gate is broken.
+- In-container health probes target port **8080**, but the container listens on **80**.
+- Staging and production share one EC2 instance; consider separating them.
+- Lint/test/coverage are placeholders — add real tooling.
 
 ### Required GitHub Secrets
 
