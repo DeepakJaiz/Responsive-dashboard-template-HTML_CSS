@@ -200,7 +200,7 @@ jobs:
         COMMANDS_JSON=$(jq -n \\\n  --arg img \"$IMAGE\" \\\n  --arg prev \"$PREVIOUS_IMAGE\" \\\n\
         \  --arg user \"${{ secrets.GHCR_USER }}\" \\\n  --arg token \"${{ secrets.GHCR_TOKEN\
         \ }}\" \\\n  --arg host_port \"${{ env.HOST_PORT }}\" \\\n  --arg container_port\
-        \ \"${{ env.CONTAINER_PORT }}\" \\\n  '[    \"if ! command -v docker >/dev/null\
+        \ \"${{ env.CONTAINER_PORT }}\" \\\n  '{commands:[    \"if ! command -v docker >/dev/null\
         \ 2>&1; then if command -v dnf >/dev/null 2>&1; then dnf install -y docker;\
         \ elif command -v yum >/dev/null 2>&1; then yum install -y docker; elif command\
         \ -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y docker.io;\
@@ -212,8 +212,7 @@ jobs:
         \ --name app-new --restart unless-stopped -p \\($host_port):\\($container_port)\
         \ \\($img)\",\n    \"curl --fail http://localhost:\\($host_port)/\",\n   \
         \ \"docker stop app || true\",\n    \"docker rm app || true\",\n    \"docker\
-        \ rename app-new app\",\n    \"docker image prune -f\"] | map(@sh) | join(\"\
-        \ \")')\nCOMMAND_ID=$(aws ssm send-command \\\n  --instance-ids \"${{ secrets.EC2_INSTANCE_ID\
+        \ rename app-new app\",\n    \"docker image prune -f\"] }')\nCOMMAND_ID=$(aws ssm send-command \\\n  --instance-ids \"${{ secrets.EC2_INSTANCE_ID\
         \ }}\" \\\n  --region \"${{ env.AWS_REGION }}\" \\\n  --document-name \"AWS-RunShellScript\"\
         \ \\\n  --comment \"Deploy app container (staging) deployment=${{ secrets.DEPLOYMENT_NAME\
         \ }}\" \\\n  --parameters \"$COMMANDS_JSON\" \\\n  --query Command.CommandId\
@@ -286,7 +285,7 @@ jobs:
         COMMANDS_JSON=$(jq -n \\\n  --arg img \"$IMAGE\" \\\n  --arg prev \"$PREVIOUS_IMAGE\" \\\n\
         \  --arg user \"${{ secrets.GHCR_USER }}\" \\\n  --arg token \"${{ secrets.GHCR_TOKEN\
         \ }}\" \\\n  --arg host_port \"${{ env.HOST_PORT }}\" \\\n  --arg container_port\
-        \ \"${{ env.CONTAINER_PORT }}\" \\\n  '[    \"if ! command -v docker >/dev/null\
+        \ \"${{ env.CONTAINER_PORT }}\" \\\n  '{commands:[    \"if ! command -v docker >/dev/null\
         \ 2>&1; then if command -v dnf >/dev/null 2>&1; then dnf install -y docker;\
         \ elif command -v yum >/dev/null 2>&1; then yum install -y docker; elif command\
         \ -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y docker.io;\
@@ -298,8 +297,7 @@ jobs:
         \ --name app-new --restart unless-stopped -p \\($host_port):\\($container_port)\
         \ \\($img)\",\n    \"curl --fail http://localhost:\\($host_port)/\",\n   \
         \ \"docker stop app || true\",\n    \"docker rm app || true\",\n    \"docker\
-        \ rename app-new app\",\n    \"docker image prune -f\"] | map(@sh) | join(\"\
-        \ \")')\nCOMMAND_ID=$(aws ssm send-command \\\n  --instance-ids \"${{ secrets.EC2_INSTANCE_ID\
+        \ rename app-new app\",\n    \"docker image prune -f\"] }')\nCOMMAND_ID=$(aws ssm send-command \\\n  --instance-ids \"${{ secrets.EC2_INSTANCE_ID\
         \ }}\" \\\n  --region \"${{ env.AWS_REGION }}\" \\\n  --document-name \"AWS-RunShellScript\"\
         \ \\\n  --comment \"Deploy app container (production) deployment=${{ secrets.DEPLOYMENT_NAME\
         \ }}\" \\\n  --parameters \"$COMMANDS_JSON\" \\\n  --query Command.CommandId\
