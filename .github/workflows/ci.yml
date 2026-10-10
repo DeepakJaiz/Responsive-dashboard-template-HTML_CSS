@@ -222,7 +222,7 @@ jobs:
                 ("if docker inspect app >/dev/null 2>&1; then PREV_ID=$(docker inspect --format \"{{.Image}}\" app); docker tag \"$PREV_ID\" " + ($prev | @sh) + " && docker push " + ($prev | @sh) + "; fi"),
                 ("docker pull " + ($img | @sh)),
                 "docker rm -f app-new app 2>/dev/null || true",
-                "if docker ps --format '{{.Names}} {{.Ports}}' | grep -v '^app-new ' | grep -q '0.0.0.0:80->'; then echo 'Port 80 is occupied by another container:'; docker ps --format 'table {{.Names}}\\t{{.Ports}}'; exit 1; fi",
+                ("if docker ps --format '{{.Names}} {{.Ports}}' | grep -v '^app-new ' | grep -q '0.0.0.0:80->'; then echo 'Port 80 is occupied by another container:'; docker ps --format 'table {{.Names}}\\t{{.Ports}}'; exit 1; fi"),
                 ("docker run -d --name app-new --restart unless-stopped -p " + $host_port + ":" + $container_port + " " + ($img | @sh)),
                 ("curl --fail --retry 5 --retry-delay 2 --retry-connrefused http://localhost:" + $host_port + "/"),
                 "docker rename app-new app",
