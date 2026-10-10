@@ -202,7 +202,7 @@ jobs:
         systemctl enable --now docker
     
         # Login and pull image
-        echo "\${GHCR_TOKEN}" | docker login ghcr.io -u "\${GHCR_USER}" --password-stdin
+        echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
         docker pull \${IMAGE}
     
         # Remove leftover test container
