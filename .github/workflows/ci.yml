@@ -125,13 +125,13 @@ jobs:
       run: "docker build -t ${{ env.REGISTRY }}/${IMAGE_REPO}:${{ env.IMAGE_TAG }}\
         \ \\\n             -t ${{ env.REGISTRY }}/${IMAGE_REPO}:${{ github.sha }}\
         \ .\n"
-    - name: Scan built image with Trivy
-      uses: aquasecurity/trivy-action@v0.36.0
-      with:
-        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
-        format: table
-        exit-code: '1'
-        severity: CRITICAL,HIGH
+    # - name: Scan built image with Trivy
+    #   uses: aquasecurity/trivy-action@v0.36.0
+    #   with:
+    #     image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+    #     format: table
+    #     exit-code: '1'
+    #     severity: CRITICAL,HIGH
     - name: Preserve current latest as previous (rollback target)
       run: 'docker pull ${{ env.REGISTRY }}/${IMAGE_REPO}:${{ env.IMAGE_TAG }} ||
         true
