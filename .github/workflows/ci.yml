@@ -203,7 +203,8 @@ jobs:
     
         # Login and pull image
         echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
-        docker pull \${IMAGE}
+        IMAGE="$(echo '${{ env.REGISTRY }}/${{ github.repository }}' | tr '[:upper:]' '[:lower:]'):latest"
+        docker pull "$IMAGE"
     
         # Remove leftover test container
         docker rm -f app-staging-new 2>/dev/null || true
