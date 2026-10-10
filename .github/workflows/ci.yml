@@ -170,12 +170,15 @@ jobs:
             "HEALTH_OK=0",
             "for i in $(seq 1 15); do if docker exec " + ($app_name | @sh) + "-new curl -sf http://localhost:" + ($container_port | @sh) + "/ 2>/dev/null; then HEALTH_OK=1; break; fi; if docker exec " + ($app_name | @sh) + "-new wget -qO- http://localhost:" + ($container_port | @sh) + "/ 2>/dev/null; then HEALTH_OK=1; break; fi; sleep 2; done",
             "if [ \"$HEALTH_OK\" != \"1\" ]; then echo \"New container failed health check\"; docker logs " + ($app_name | @sh) + "-new 2>&1 || true; exit 1; fi",
+            
             "docker stop " + ($app_name | @sh) + " 2>/dev/null || true",
-            "docker rm " + ($app_name | @sh) + " 2>/dev/null || true",
-            "docker rm -f " + ($app_name | @sh) + "-new",
+            "docker rm -f " + ($app_name | @sh) + " 2>/dev/null || true",
+            "docker rm -f " + ($app_name | @sh) + "-new 2>/dev/null || true",
             "docker run -d --name " + ($app_name | @sh) + " --restart unless-stopped -p " + ($host_port | @sh) + ":" + ($container_port | @sh) + " " + ($img | @sh),
+            "sleep 5",
             "curl -sf http://localhost:" + ($host_port | @sh) + "/ >/dev/null",
             "docker image prune -f || true"
+
           ]}')
         aws ssm send-command \
           --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
