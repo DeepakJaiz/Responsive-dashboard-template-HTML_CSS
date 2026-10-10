@@ -224,6 +224,7 @@ jobs:
                 "docker ps -q --filter publish=80 | xargs -r docker rm -f",
                 "docker rm -f app-new app 2>/dev/null || true",
                 ("docker run -d --name app-new --restart unless-stopped -p " + $host_port + ":" + $container_port + " " + ($img | @sh)),
+                "sleep 5",
                 ("curl --fail --retry 5 --retry-delay 2 --retry-connrefused http://localhost:" + $host_port + "/"),
                 "docker rename app-new app",
                 "docker image prune -f"
