@@ -151,6 +151,12 @@ jobs:
       with:
         role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
         aws-region: ${{ env.AWS_REGION }}
+    - name: Normalize image repository (lowercase)
+      shell: bash
+      run: |
+        IMAGE_REPO=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+        echo "IMAGE_REPO=$IMAGE_REPO" >> "$GITHUB_ENV"
+        echo "Using image: ghcr.io/$IMAGE_REPO:latest"
     - name: Deploy to EC2 via SSM
       if: ${{ env.ACT != 'true' }}
       shell: bash
