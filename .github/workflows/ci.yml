@@ -111,8 +111,10 @@ jobs:
     #     exit-code: '1'
     #     severity: CRITICAL,HIGH
     - name: Save image artifact
-      run: docker save ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
-        -o /tmp/image.tar
+      run: |
+        IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}"
+        docker tag "${IMAGE}:${{ env.IMAGE_TAG }}" "${IMAGE}:latest"
+        docker save "${IMAGE}:${{ env.IMAGE_TAG }}" "${IMAGE}:latest" -o /tmp/image.tar
     - name: Upload image artifact
       uses: actions/upload-artifact@v4
       with:
