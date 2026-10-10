@@ -68,11 +68,14 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+    
     - name: Normalize image repository (lowercase)
-      run: 'echo "IMAGE_REPO=$(echo "${{ github.repository }}" | tr ''[:upper:]''
-        ''[:lower:]'')" >> "$GITHUB_ENV"
+      shell: bash
+      run: |
+        IMAGE_REPO=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+        echo "IMAGE_REPO=$IMAGE_REPO" >> "$GITHUB_ENV"
+        echo "Using image: ghcr.io/$IMAGE_REPO:latest"
 
-        '
     - name: Set up Docker Buildx
       if: ${{ env.ACT != 'true' }}
       uses: docker/setup-buildx-action@v3
