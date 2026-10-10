@@ -186,7 +186,7 @@ jobs:
             "docker rm app 2>/dev/null || true",
             "docker stop app-new 2>/dev/null || true",
             "docker rm app-new 2>/dev/null || true",
-            ("docker run -d --name app --restart unless-stopped -p " + $host_port + ":" + $container_port + " " + ($img | @sh))
+            ("docker run -d --name app-new --restart unless-stopped " + ($img | @sh)),
           ]')
 
         COMMANDS_JSON=$(jq -n --argjson c "$COMMANDS_JSON" '{"commands": $c}')
